@@ -9,6 +9,8 @@ A Chrome and Firefox extension that gives X back four things it removed:
 
 No servers, no analytics, no tracking. One permission (`storage`), x.com only.
 
+Install from Chrome Web Store: https://chromewebstore.google.com/detail/revertx/emnkkmbblhgoapdkbnhejimjpklajlng
+
 > Not affiliated with X Corp.
 
 ## Install
