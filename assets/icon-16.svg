@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- The 16px cut. Scaled down, icon.svg's stroke falls under two pixels,
+       so this one has a fatter stroke and a wider gap. -->
+  <rect width="16" height="16" rx="3.5" fill="#15171a"/>
+  <path d="M5.42 4.31 A4.5 4.5 0 1 0 10.58 4.31"
+        fill="none" stroke="#4FA2B8" stroke-width="2.1" stroke-linecap="round"/>
+  <path d="M7.9 2.2 L10.0 6.9 L12.9 2.7 Z" fill="#4FA2B8"/>
+</svg>

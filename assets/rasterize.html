@@ -1,0 +1,65 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>revertX icon rasterizer</title>
+<!--
+  Renders icon.svg at the sizes the manifest needs. A browser, because
+  ImageMagick's SVG renderer drops strokes.
+
+  Serve this directory over http (python3 -m http.server -d assets) and
+  open the page; fetch() cannot read a file:// sibling. Save the PNGs into
+  extension/icons/. The 16px size uses icon-16.svg, a hand-tuned cut.
+-->
+<style>
+  body { font: 14px system-ui, sans-serif; background: #fff; color: #15171a;
+         margin: 24px; }
+  .row { display: flex; align-items: flex-end; gap: 20px; margin-top: 16px; }
+  figure { margin: 0; text-align: center; }
+  figcaption { font-size: 12px; color: #6e6a62; margin-top: 6px; }
+  canvas { image-rendering: pixelated; }
+  a { color: #226A7C; }
+</style>
+<h1>revertX icons</h1>
+<p>Right-click each canvas, or use the download link, and save into
+  <code>extension/icons/</code>.</p>
+<div class="row" id="out"></div>
+
+<script type="module">
+const SIZES = [16, 32, 48, 128];
+
+// Size the Image before drawing so the browser rasterizes at that size.
+async function render(src, size) {
+  const text = await (await fetch(src)).text();
+  const url = URL.createObjectURL(new Blob([text], { type: "image/svg+xml" }));
+  const img = new Image();
+  img.width = img.height = size;
+  await new Promise((ok, fail) => {
+    img.onload = ok;
+    img.onerror = () => fail(new Error("could not decode " + src));
+    img.src = url;
+  });
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  canvas.getContext("2d").drawImage(img, 0, 0, size, size);
+  URL.revokeObjectURL(url);
+  return canvas;
+}
+
+const results = {};
+for (const size of SIZES) {
+  const src = size === 16 ? "icon-16.svg" : "icon.svg";
+  const canvas = await render(src, size);
+  const data = canvas.toDataURL("image/png");
+  results["icon" + size] = data;
+
+  const fig = document.createElement("figure");
+  const link = document.createElement("a");
+  link.href = data;
+  link.download = "icon" + size + ".png";
+  link.textContent = "icon" + size + ".png";
+  fig.append(canvas, Object.assign(document.createElement("figcaption"), {
+    textContent: size + "px",
+  }), link);
+  document.getElementById("out").append(fig);
+}
+window.icons = results;
+</script>

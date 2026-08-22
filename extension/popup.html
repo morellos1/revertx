@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>revertX</title>
+  <link rel="stylesheet" href="dist/popup.css">
+</head>
+<body>
+  <header>
+    <h1 class="wordmark">revert<span class="tld">X</span></h1>
+  </header>
+
+  <section>
+    <label class="row">
+      <input type="checkbox" id="mediagrid" checked>
+      <span>Media tab opens the photo grid</span>
+    </label>
+    <label class="row">
+      <input type="checkbox" id="likestab" checked>
+      <span>Likes tab on your profile</span>
+    </label>
+    <p class="warn" id="likestab-warn" hidden>X no longer ships this layout.</p>
+    <label class="row">
+      <input type="checkbox" id="postgrid">
+      <span>Photo grid in posts</span>
+    </label>
+    <p class="warn" id="postgrid-warn" hidden>X no longer ships this layout.</p>
+    <label class="row">
+      <input type="checkbox" id="sharecopy" checked>
+      <span>Copy link first in the share menu</span>
+    </label>
+
+    <p class="note">Reload to apply changes</p>
+  </section>
+
+  <script src="dist/popup.js"></script>
+</body>
+</html>

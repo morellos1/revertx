@@ -1,0 +1,8 @@
+node_modules/
+extension/dist/
+revertx.zip
+.DS_Store
+extension/_metadata/
+extension-firefox/
+revertx-firefox.zip
+revertx-source.zip

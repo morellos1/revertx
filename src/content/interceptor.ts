@@ -1,0 +1,259 @@
+// Runs in the page's own world at document_start. Three jobs:
+//
+//   1. Flip two of X's feature flags before X reads them.
+//   2. Open the Media tab on the photo grid.
+//   3. Route the Likes tab's click through X's router.
+//
+// chrome.storage is not reachable from here in time, so the content script
+// mirrors the switches into localStorage (see core/native.ts). What this
+// script did is written to a <html> attribute for the content script.
+(() => {
+  const MIRROR_KEY = "xtag:flags";
+  const NATIVE_ATTR = "data-xtag-native";
+
+  interface Switches { mediagrid: boolean; likestab: boolean; postgrid: boolean }
+  const readSwitches = (): Switches => {
+    const defaults: Switches = { mediagrid: true, likestab: true, postgrid: false };
+    try {
+      const raw = localStorage.getItem(MIRROR_KEY);
+      if (!raw) return defaults;
+      const s = JSON.parse(raw) as Record<string, unknown>;
+      return {
+        mediagrid: s["mediagrid"] !== false,
+        likestab: s["likestab"] !== false,
+        postgrid: s["postgrid"] === true,
+      };
+    } catch {
+      return defaults;
+    }
+  };
+
+  // --- Flags ---------------------------------------------------------------
+  // X ships every feature flag inline in window.__INITIAL_STATE__. Two of
+  // them, set to false, bring back code X still ships:
+  //
+  //   responsive_web_history_screen_enabled: /<handle>/likes renders under
+  //     the profile instead of redirecting to /i/history/likes. X's History
+  //     page stops working while this is off.
+  //   rweb_media_carousel_enabled: the 2x2 photo grid inside posts instead
+  //     of the slider.
+  //
+  // X reads a flag as `customOverrides[key] ?? user.config[key].value`, so
+  // both are written. The override survives the later settings re-fetch.
+  const HISTORY = "responsive_web_history_screen_enabled";
+  const CAROUSEL = "rweb_media_carousel_enabled";
+
+  type FlagConfig = Record<string, { value?: unknown } | undefined>;
+  interface FeatureSwitch {
+    defaultConfig?: FlagConfig;
+    user?: { config?: FlagConfig };
+    customOverrides?: Record<string, unknown>;
+  }
+
+  const patchFlags = (state: unknown): void => {
+    if (!state || typeof state !== "object") return;
+    const fs = (state as { featureSwitch?: FeatureSwitch }).featureSwitch;
+    if (!fs || typeof fs !== "object") return;
+    const configs = [fs.defaultConfig, fs.user?.config]
+      .filter((c): c is FlagConfig => !!c && typeof c === "object");
+    const present = (key: string): boolean => configs.some((c) => {
+      const flag = c[key];
+      return !!flag && typeof flag === "object";
+    });
+    const sw = readSwitches();
+    const wanted = new Set<string>();
+    if (sw.likestab) wanted.add(HISTORY);
+    if (sw.postgrid) wanted.add(CAROUSEL);
+    const flipped = new Set<string>();
+    const overrides: Record<string, boolean> = {};
+    for (const key of wanted) {
+      if (!present(key)) continue;
+      for (const c of configs) {
+        const flag = c[key];
+        if (flag && typeof flag === "object") flag.value = false;
+      }
+      overrides[key] = false;
+      flipped.add(key);
+    }
+    if (flipped.size > 0) {
+      fs.customOverrides = { ...(fs.customOverrides ?? {}), ...overrides };
+    }
+    // Which flags were flipped, and which X still ships. The popup warns
+    // when a switch is on for a flag X removed.
+    const report = {
+      likes: flipped.has(HISTORY),
+      postgrid: flipped.has(CAROUSEL),
+      flags: { history: present(HISTORY), carousel: present(CAROUSEL) },
+    };
+    document.documentElement.setAttribute(NATIVE_ATTR, JSON.stringify(report));
+  };
+
+  // X's inline boot script assigns window.__INITIAL_STATE__ once, after
+  // this script runs. A plain property would take the assignment silently,
+  // so the global is replaced with an accessor that patches whatever X
+  // stores. The accessor stays configurable because X deletes the global
+  // after boot. Hooking the state this way, instead of rewriting X's
+  // script, is a widely used pattern; see THIRD_PARTY_NOTICES.md.
+  const STATE_KEY = "__INITIAL_STATE__";
+  const hookBootState = (): void => {
+    const win = window as unknown as Record<string, unknown>;
+    let held: unknown = Object.hasOwn(win, STATE_KEY) ? win[STATE_KEY] : undefined;
+    if (held !== undefined) patchFlags(held);
+    Object.defineProperty(win, STATE_KEY, {
+      configurable: true,
+      enumerable: true,
+      get() { return held; },
+      set(next: unknown) {
+        held = next;
+        patchFlags(next);
+      },
+    });
+  };
+  try {
+    hookBootState();
+  } catch {
+    // Leave X alone. Without the attribute the popup reports nothing flipped.
+  }
+
+  // --- X's router ----------------------------------------------------------
+  // Two clicks below have to navigate through X's own router. A pushState
+  // plus a synthetic popstate would work, but X treats a popstate as a
+  // history traversal and restores the scroll position it keeps per path,
+  // so the page jumps. X's tab links push `{lockScroll: true}`, which holds
+  // the page still. The history object sits in the props of an element a
+  // few fibers below #react-root. If it cannot be found, the popstate path
+  // is the fallback.
+  interface XHistory {
+    push(path: string, state?: Record<string, unknown>): void;
+    replace(path: string, state?: Record<string, unknown>): void;
+  }
+  interface Fiber { child?: Fiber | null; memoizedProps?: { history?: unknown } | null }
+  const xHistory = (): XHistory | null => {
+    try {
+      const root = document.getElementById("react-root") as
+        (HTMLElement & Record<string, unknown>) | null;
+      const key = root && Object.keys(root).find((k) => k.startsWith("__reactContainer"));
+      let fiber = key ? (root[key] as Fiber | undefined) : undefined;
+      for (let hops = 0; fiber && hops < 40; hops++) {
+        const h = fiber.memoizedProps?.history as Partial<XHistory> | undefined;
+        if (h && typeof h.push === "function" && typeof h.replace === "function") {
+          return h as XHistory;
+        }
+        fiber = fiber.child ?? undefined;
+      }
+    } catch { /* not X's tree */ }
+    return null;
+  };
+  const TAB_STATE = { lockScroll: true };
+  // Modifier clicks (new tab, new window) belong to the browser.
+  const modified = (e: MouseEvent): boolean =>
+    e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0;
+
+  // --- Media tab -----------------------------------------------------------
+  // X's Media tab opens on Videos. Photos mode is the same page with
+  // `?filter=photo`; there is no flag. Two ways in:
+  //
+  //   Direct load of /<handle>/media: rewrite the URL before X boots.
+  //   Click on the tab: take the click and push the photo URL through X's
+  //     router with X's tab state.
+  //
+  // Fallback without the router: let X's own push finish, then replace the
+  // entry's URL and fire a popstate on the next task. X's router routes
+  // from its own copy of the location, so rewriting the push itself does
+  // not work, and a popstate fired inside pushState gets overwritten.
+  //
+  // Only a click on an unselected Media tab is touched. Picking Videos from
+  // the tab's dropdown pushes the same bare path, and that has to stay.
+  const MEDIA_PATH_RE = /^\/[A-Za-z0-9_]{1,15}\/media\/?$/;
+  const PHOTO_QUERY = "?filter=photo";
+  const ARM_TTL_MS = 2000;
+
+  const mediaPath = (url: string | URL | null | undefined): string | null => {
+    if (url === undefined || url === null) return null;
+    try {
+      const to = new URL(String(url), location.href);
+      if (to.origin !== location.origin || to.search || to.hash) return null;
+      return MEDIA_PATH_RE.test(to.pathname) ? to.pathname.replace(/\/$/, "") : null;
+    } catch {
+      return null;
+    }
+  };
+
+  try {
+    if (readSwitches().mediagrid && mediaPath(location.href)
+      && !location.search) {
+      history.replaceState(history.state, "", location.pathname + PHOTO_QUERY);
+    }
+  } catch { /* leave the URL alone */ }
+
+  let armed: { path: string; until: number } | null = null;
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const tab = target.closest<HTMLAnchorElement>('a[role="tab"]');
+    if (!tab || tab.getAttribute("aria-selected") === "true") return;
+    const path = mediaPath(tab.getAttribute("href") ?? "");
+    if (!path || modified(event)) return;
+    if (!readSwitches().mediagrid) { armed = null; return; }
+    armed = null;
+    const h = xHistory();
+    if (h) {
+      try {
+        h.push(path + PHOTO_QUERY, TAB_STATE);
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      } catch { /* fall back below */ }
+    }
+    armed = { path, until: Date.now() + ARM_TTL_MS };
+  }, true);
+
+  const origPush = History.prototype.pushState;
+  const origReplace = History.prototype.replaceState;
+  History.prototype.pushState = function (
+    this: History, state: unknown, title: string, url?: string | URL | null,
+  ) {
+    const ret = origPush.call(this, state, title, url);
+    try {
+      const arm = armed;
+      if (arm && Date.now() < arm.until && mediaPath(url) === arm.path) {
+        armed = null;
+        const target = arm.path + PHOTO_QUERY;
+        setTimeout(() => {
+          if (location.pathname.replace(/\/$/, "") !== arm.path || location.search) return;
+          origReplace.call(history, history.state, "", target);
+          dispatchEvent(new PopStateEvent("popstate", { state: history.state }));
+        }, 0);
+      }
+    } catch { /* never break the page's own navigation */ }
+    return ret;
+  };
+
+  // --- Likes tab -----------------------------------------------------------
+  // likes-tab.ts adds the tab as a clone of one of X's, so it has none of
+  // X's click handlers. Without this, a click is a full page load.
+  const LIKES_TAB_ATTR = "data-xtag-likes-tab";
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const tab = target.closest<HTMLAnchorElement>(`a[${LIKES_TAB_ATTR}]`);
+    if (!tab || modified(event)) return;
+    const href = tab.getAttribute("href");
+    if (!href) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const h = xHistory();
+    if (h) {
+      try {
+        h.push(href, TAB_STATE);
+        return;
+      } catch { /* fall back below */ }
+    }
+    // X's entries carry a random key; match the shape so Back stays sane.
+    const key = Math.random().toString(36).slice(2, 8);
+    origPush.call(history, { key, state: undefined }, "", href);
+    setTimeout(() => {
+      dispatchEvent(new PopStateEvent("popstate", { state: history.state }));
+    }, 0);
+  }, true);
+})();

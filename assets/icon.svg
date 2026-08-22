@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- The revertX mark: a counter-clockwise revert arrow. No X logo or
+       wordmark; revertX is not affiliated with X Corp. Colours are the
+       popup's ink and accent tokens. Rasterize with assets/rasterize.html
+       (ImageMagick drops the stroke). -->
+  <rect width="128" height="128" rx="28" fill="#15171a"/>
+  <!-- The ring, open at the top, drawn counter-clockwise. -->
+  <path d="M46 32.8 A36 36 0 1 0 82 32.8"
+        fill="none" stroke="#4FA2B8" stroke-width="13" stroke-linecap="round"/>
+  <path d="M65.5 23.3 L79.5 48.1 L94.1 22.9 Z" fill="#4FA2B8"/>
+</svg>

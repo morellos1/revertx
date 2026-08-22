@@ -1,0 +1,22 @@
+{
+  "name": "revertx",
+  "version": "2.0.1",
+  "private": true,
+  "description": "Restores what X removed: the Media tab's photo grid, the Likes tab on your profile, the photo grid in posts, and Copy link first.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "zip": "npm run build && npm run zip:chrome && npm run zip:firefox",
+    "zip:chrome": "rm -f revertx.zip && (cd extension && zip -qr ../revertx.zip . -x '.*' '_metadata/*') && zip -qj revertx.zip LICENSE THIRD_PARTY_NOTICES.md && unzip -l revertx.zip",
+    "zip:firefox": "rm -f revertx-firefox.zip && (cd extension-firefox && zip -qr ../revertx-firefox.zip . -x '.*') && zip -qj revertx-firefox.zip LICENSE THIRD_PARTY_NOTICES.md && unzip -l revertx-firefox.zip",
+    "lint:firefox": "npx --yes web-ext lint --source-dir extension-firefox"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.268",
+    "esbuild": "^0.21.0",
+    "typescript": "^5.4.0"
+  }
+}
