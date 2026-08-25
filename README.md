@@ -11,6 +11,8 @@ No servers, no analytics, no tracking. One permission (`storage`), x.com only.
 
 Install from Chrome Web Store: https://chromewebstore.google.com/detail/revertx/emnkkmbblhgoapdkbnhejimjpklajlng
 
+Instal Firefox Addon: https://addons.mozilla.org/en-US/firefox/addon/revertx/
+
 > Not affiliated with X Corp.
 
 ## Install
