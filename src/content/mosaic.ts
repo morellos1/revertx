@@ -1523,6 +1523,46 @@ function drainPayloadBuffer(): void {
   }
 }
 
+// One media entity as one ApiMedia, or null for anything else. `index` is
+// the entity's 1-BASED POSITION in the media array it was reached through,
+// and it OVERRIDES the number in expanded_url. MEASURED live 2026-08-27
+// (store dump on a 4-photo post): X writes /photo/1 on EVERY media entity
+// of a multi-photo post — four distinct media_url_https, four identical
+// expanded_urls. The per-photo index exists only as array position (which
+// is also how X's own viewer routes: the n-th media opens /photo/<n>,
+// counted across the whole array, videos included). Building the href off
+// expanded_url alone deduped a 4-photo post down to one tile.
+function mediaEntityOf(
+  obj: Record<string, unknown>, index: number | null,
+): ApiMedia | null {
+  const exp = obj["expanded_url"];
+  const src = obj["media_url_https"];
+  const type = obj["type"];
+  if (typeof exp !== "string" || typeof src !== "string"
+    || typeof type !== "string" || !exp.includes("/photo/")) {
+    return null;
+  }
+  try {
+    let href = new URL(exp).pathname;
+    if (index !== null) href = href.replace(/\/photo\/\d+$/, `/photo/${index}`);
+    // original_info rides every media entity beside media_url_https and
+    // carries the ORIGINAL dimensions; the masonry's ratio, known
+    // before any thumbnail loads. Absent or malformed, the tile lays
+    // out square and the thumb's load event teaches the truth.
+    let ratio: number | undefined;
+    const info = obj["original_info"];
+    if (info && typeof info === "object") {
+      const w = (info as Record<string, unknown>)["width"];
+      const h = (info as Record<string, unknown>)["height"];
+      if (typeof w === "number" && typeof h === "number" && w > 0 && h > 0) {
+        ratio = h / w;
+      }
+    }
+    return { href, src, video: type !== "photo", ratio };
+  } catch { /* unparseable expanded_url; skip the item */ }
+  return null;
+}
+
 // Walk the whole payload rather than a hardcoded instruction path: the
 // timeline envelope reshapes (modules vs entries, grid vs list), but a
 // photo is always an object carrying expanded_url + media_url_https +
@@ -1534,33 +1574,31 @@ function scanApiPayload(
   flags?: { terminated: boolean },
 ): void {
   if (Array.isArray(node)) {
-    for (const item of node) scanApiPayload(item, media, cursors, flags);
+    // An array whose direct elements are media entities is a tweet's media
+    // array: mint each with its position (see mediaEntityOf). A minted
+    // entity is not scanned deeper — it holds no cursors, and the object
+    // branch below would mint it AGAIN, unindexed.
+    for (let i = 0; i < node.length; i++) {
+      const item: unknown = node[i];
+      const m = item && typeof item === "object" && !Array.isArray(item)
+        ? mediaEntityOf(item as Record<string, unknown>, i + 1)
+        : null;
+      if (m) {
+        media.push(m);
+      } else {
+        scanApiPayload(item, media, cursors, flags);
+      }
+    }
     return;
   }
   if (!node || typeof node !== "object") return;
   const obj = node as Record<string, unknown>;
-  const exp = obj["expanded_url"];
-  const src = obj["media_url_https"];
-  const type = obj["type"];
-  if (typeof exp === "string" && typeof src === "string"
-    && typeof type === "string" && exp.includes("/photo/")) {
-    try {
-      // original_info rides every media entity beside media_url_https and
-      // carries the ORIGINAL dimensions; the masonry's ratio, known
-      // before any thumbnail loads. Absent or malformed, the tile lays
-      // out square and the thumb's load event teaches the truth.
-      let ratio: number | undefined;
-      const info = obj["original_info"];
-      if (info && typeof info === "object") {
-        const w = (info as Record<string, unknown>)["width"];
-        const h = (info as Record<string, unknown>)["height"];
-        if (typeof w === "number" && typeof h === "number" && w > 0 && h > 0) {
-          ratio = h / w;
-        }
-      }
-      media.push({ href: new URL(exp).pathname, src, video: type !== "photo", ratio });
-    } catch { /* unparseable expanded_url; skip the item */ }
-  }
+  // A media entity reached OUTSIDE an array (no position to speak of):
+  // keep expanded_url's own number rather than drop the photo. If X ever
+  // nests entities behind per-item wrappers, this is the branch that
+  // still shows page 1 of each post.
+  const solo = mediaEntityOf(obj, null);
+  if (solo) media.push(solo);
   if (obj["cursorType"] === "Bottom" && typeof obj["value"] === "string") {
     cursors.push(obj["value"]);
   }
