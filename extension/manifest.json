@@ -32,6 +32,7 @@
       "matches": ["https://x.com/*"],
       "exclude_matches": ["https://x.com/i/deck*"],
       "js": ["dist/content.js"],
+      "css": ["dist/content.css"],
       "run_at": "document_idle"
     }
   ]

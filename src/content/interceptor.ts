@@ -256,4 +256,135 @@
       dispatchEvent(new PopStateEvent("popstate", { state: history.state }));
     }, 0);
   }, true);
+
+  // --- Media-timeline tap (mosaic.ts) --------------------------------------
+  // Ported from 1.x (feature/grid-page-scroll, round 13/14). The mosaic
+  // must not fetch pages of its own by default: replays spend the same
+  // per-user rate bucket as X's own feeds, and a few gridded profiles in a
+  // row emptied it (429s took the whole site down). So this wraps fetch and
+  // XHR in the PAGE's world and hands every photos-timeline response the
+  // page fetches anyway to the content script: zero extra requests.
+  // Payloads travel as a JSON string in a CustomEvent detail (strings cross
+  // the isolated-world boundary unambiguously in both engines).
+  //
+  // The emit also carries x-rate-limit-remaining/reset (same-origin GraphQL,
+  // headers readable) and fires on 429s too, body-less: the mosaic's driver
+  // holds a floor on the remaining budget so the bucket is never driven to
+  // zero.
+  const MEDIA_RE = /\/i\/api\/graphql\/[^/]+\/[^/?]*(?:PhotoTimeline|UserMedia)/;
+  // UserByScreenName carries legacy.media_count, X's own exact total for
+  // the profile's media tab. The mosaic uses it as a CEILING end signal
+  // (the one that exists even when X serves a revisited view from its
+  // client cache and no timeline payload ever arrives). kind="profile"
+  // payloads carry NO rate headers on purpose: that endpoint spends a
+  // DIFFERENT bucket than the photos timeline, and forwarding its numbers
+  // would poison the driver's rate floor.
+  const PROFILE_RE = /\/i\/api\/graphql\/[^/]+\/UserByScreenName/;
+
+  // THE INIT RACE (found live on /echosluden, 2026-08-15): this script runs
+  // at document_start and X's first fetches land within ~1s, but the
+  // isolated-world listener registers at document_idle. On a full page load
+  // the earliest payloads (UserByScreenName above all, sometimes the page-1
+  // timeline too) dispatched into NOTHING and were lost, which starved the
+  // media_count end signal on exactly the small profiles that need it. So
+  // emissions QUEUE until the content script says it is listening (the
+  // xtag:media-listen handshake), then replay.
+  let listenerReady = false;
+  const pendingPayloads: string[] = [];
+  const PENDING_MAX = 20;
+
+  const dispatchPayload = (detail: string): void => {
+    document.dispatchEvent(new CustomEvent("xtag:media-payload", { detail }));
+  };
+
+  const emit = (url: string, body: string, status: number,
+    remaining: string | null, reset: string | null, kind = "media"): void => {
+    const detail = JSON.stringify({ url, body, status, remaining, reset, kind });
+    if (listenerReady) {
+      dispatchPayload(detail);
+      return;
+    }
+    pendingPayloads.push(detail);
+    if (pendingPayloads.length > PENDING_MAX) pendingPayloads.shift();
+  };
+
+  document.addEventListener("xtag:media-listen", () => {
+    listenerReady = true;
+    for (const detail of pendingPayloads.splice(0)) dispatchPayload(detail);
+  });
+
+  const origFetch = window.fetch;
+  window.fetch = async function (...args: Parameters<typeof fetch>) {
+    const resp = await origFetch.apply(this, args);
+    try {
+      const first = args[0];
+      const url = typeof first === "string"
+        ? first
+        : first instanceof Request ? first.url : String(first);
+      if (MEDIA_RE.test(url)) {
+        const remaining = resp.headers.get("x-rate-limit-remaining");
+        const reset = resp.headers.get("x-rate-limit-reset");
+        if (resp.ok) {
+          resp.clone().text()
+            .then((body) => emit(url, body, resp.status, remaining, reset))
+            .catch(() => { /* stream gone */ });
+        } else {
+          // A failed page still teaches: a 429 (or any refusal) carries
+          // the budget headers the driver paces itself by.
+          emit(url, "", resp.status, remaining, reset);
+        }
+      } else if (PROFILE_RE.test(url) && resp.ok) {
+        resp.clone().text()
+          .then((body) => emit(url, body, resp.status, null, null, "profile"))
+          .catch(() => { /* stream gone */ });
+      }
+    } catch { /* never break the page's own fetch */ }
+    return resp;
+  };
+
+  // A version marker page-context probes can read (fetch.toString() shows
+  // only the wrapper body, which barely changes between builds; this was
+  // the diagnosis gap when hunting the init race live). Bump when the
+  // tap's behavior changes.
+  try {
+    (window.fetch as typeof window.fetch & { __xtagV?: number }).__xtagV = 5;
+  } catch { /* marker only */ }
+
+  // X's app is fetch-based; the XHR wrap is the belt.
+  const origOpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (
+    this: XMLHttpRequest & { __xtagUrl?: string; __xtagHooked?: boolean },
+    method: string,
+    url: string | URL,
+    isAsync?: boolean,
+    username?: string | null,
+    password?: string | null,
+  ) {
+    this.__xtagUrl = String(url);
+    // One listener per XHR instance: open() may legally be called again on
+    // the same object, and stacking a listener per call double-emitted the
+    // payload (harmless, tiles dedupe, but wasted parse work).
+    if (this.__xtagHooked) {
+      return origOpen.call(this, method, url, isAsync ?? true, username, password);
+    }
+    this.__xtagHooked = true;
+    this.addEventListener("load", function (this: XMLHttpRequest & { __xtagUrl?: string }) {
+      try {
+        if (!this.__xtagUrl) return;
+        if (MEDIA_RE.test(this.__xtagUrl)) {
+          const remaining = this.getResponseHeader("x-rate-limit-remaining");
+          const reset = this.getResponseHeader("x-rate-limit-reset");
+          if (this.status === 200 && typeof this.responseText === "string") {
+            emit(this.__xtagUrl, this.responseText, 200, remaining, reset);
+          } else if (this.status >= 400) {
+            emit(this.__xtagUrl, "", this.status, remaining, reset);
+          }
+        } else if (PROFILE_RE.test(this.__xtagUrl)
+          && this.status === 200 && typeof this.responseText === "string") {
+          emit(this.__xtagUrl, this.responseText, 200, null, null, "profile");
+        }
+      } catch { /* never break the page's own XHR */ }
+    });
+    return origOpen.call(this, method, url, isAsync ?? true, username, password);
+  };
 })();

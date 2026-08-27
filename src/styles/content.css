@@ -1,0 +1,186 @@
+/* revertX content styles: the mosaic view (mosaic.ts). Everything else in
+   2.0 styles itself inline or through X's own nodes. Class names keep the
+   1.x xtag-grid-* vocabulary; the ancestor file's comments (branch
+   feature/grid-page-scroll, src/styles/content.css) explain each rule's
+   history where this file abbreviates it. */
+
+/* --- the mosaic overlay --------------------------------------------------- */
+/* An opaque overlay over X's own media view. The view underneath is NOT
+   hidden: the overlay covers it, and hiding it (visibility) made X leave
+   every photo anchor EMPTY on fresh loads (measured 2026-08-14), which
+   starved the harvest entirely. */
+#xtag-grid {
+  /* Position and geometry are set by placeOverlay per mode: ABSOLUTE at
+     the view's document position while the profile header is on screen,
+     FIXED under the sticky bar once the tab bar docks. The overlay lives
+     on document.body (the one parent React never reconciles), so it needs
+     its own stacking. */
+  z-index: 1000;
+  /* NO INTERNAL SCROLL, IN EITHER MODE. `overflow: hidden` refuses the
+     wheel, so it chains straight out to the page, while leaving the box
+     programmatically scrollable, which is what syncScroll needs. Giving
+     the docked overlay `overflow-y: auto` instead made it the scroll
+     container the reader's wheel found first, and the loader read the
+     pinned overlay as the end of the grid (measured; see the ancestor
+     file). */
+  overflow: hidden;
+  background: #000;
+  outline: none;
+}
+
+#xtag-grid.xtag-light { background: #fff; }
+
+/* The window's scrollbar is the mosaic's scrollbar: the view underneath is
+   clipped, so the spacer is the only thing holding the page's height, and
+   sizeSpacer keeps it exactly long enough to walk the mosaic to its end. */
+#xtag-grid-spacer {
+  width: 1px;
+  pointer-events: none;
+  visibility: hidden;
+  /* The column is a flex column, and a flex item with a height is still
+     free to shrink. This one must not: its height IS the scrollbar. */
+  flex: 0 0 auto;
+}
+
+/* X's own timeline under the mosaic, kept in the layout, invisible,
+   clipped to two screens. `display: none` gives the list no box, so its
+   end sits at document position ~1000 and X fetches another page at every
+   scroll position there is; two screens keeps X off its list's end.
+
+   LIFTED WHILE THE WINDOW IS BORROWED (see borrowWindow): a tile click can
+   ride the window to the cell it came from, and a ride against a
+   two-screen list is meaningless. The clip is visibility and overflow,
+   NEVER display, which is also what lets openTile click an already-mounted
+   anchor with no borrow at all: a display:none node has no live handler. */
+html.xtag-gridmode:not(.xtag-grid-borrowing)
+  [data-testid="primaryColumn"] section[role="region"] {
+  visibility: hidden !important;
+  height: 200vh !important;
+  max-height: 200vh !important;
+  overflow: hidden !important;
+}
+
+/* The mosaic steps aside while the photo viewer route is up (its close
+   returns here), keeping all its state. Open dropdowns do not hide it:
+   punchHole clips a hole for the menu instead, because menus can never
+   paint above a body-level overlay (#layers is a z:1 context nested inside
+   react-root's z:0, measured). */
+#xtag-grid.xtag-grid-viewing { visibility: hidden; }
+
+/* Nothing measured yet = nothing to show: on a fresh page load X has
+   rendered neither the column nor the tab bar, and fallback geometry
+   flashed a viewport-filling skeleton until X's first real render. */
+#xtag-grid.xtag-grid-unplaced { visibility: hidden; }
+
+/* --- tiles ----------------------------------------------------------------- */
+/* Tiles and skeletons are positioned ABSOLUTELY by layoutMosaic, which
+   writes left/top/width/height inline and gives the container its explicit
+   height. This is the one structural difference from the 1.x uniform grid
+   (which was display:grid with square cells). */
+.xtag-grid-tiles {
+  position: relative;
+  padding: 2px 0 0;
+}
+
+/* A real tile SHIMMERS until its image has painted, the same sweep the
+   skeletons wear; xtag-tile-ready lands from the img's load event (or the
+   second error) and turns it off. The BASE tone sits clearly above X's
+   black on purpose: between sweep passes, and under
+   prefers-reduced-motion, a placeholder must still read as "loading",
+   never as a black box. */
+.xtag-tile {
+  position: absolute;
+  display: block;
+  overflow: hidden;
+  background: linear-gradient(100deg, #232931 30%, #47525f 50%, #232931 70%);
+  background-size: 300% 100%;
+  animation: xtag-skel 1.3s linear infinite;
+}
+
+.xtag-tile.xtag-tile-ready {
+  background: #16181c;
+  animation: none;
+}
+
+#xtag-grid.xtag-light .xtag-tile {
+  background: linear-gradient(100deg, #e6eaee 30%, #c6cfd7 50%, #e6eaee 70%);
+  background-size: 300% 100%;
+}
+
+#xtag-grid.xtag-light .xtag-tile.xtag-tile-ready {
+  background: #eff1f3;
+  animation: none;
+}
+
+/* cover, not contain: the tile's box already has the image's own ratio
+   when the payload taught it, so cover is a no-op there; where the ratio
+   was clamped (extreme panoramas and towers) or defaulted, cover crops
+   instead of letterboxing. */
+.xtag-tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.xtag-tile:hover img { opacity: 0.85; }
+
+/* A clicked tile dims while the covered anchor ride runs; without it a
+   click that waits on a remount looks ignored. */
+.xtag-tile.xtag-tile-opening img { opacity: 0.55; }
+
+/* Video tiles carry a play glyph (photos-timeline GIFs mostly). Pure CSS
+   triangle so no font/svg dependency. */
+.xtag-tile-video::after {
+  content: "";
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  border-style: solid;
+  border-width: 7px 0 7px 12px;
+  border-color: transparent transparent transparent #fff;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+}
+
+/* The loading tail: shimmer skeletons while more can still arrive. They
+   are trailing CHILDREN of .xtag-grid-tiles, laid out by the same masonry
+   pass, so they continue the columns instead of starting a detached block.
+   Hidden whole when the account is exhausted (the loading class comes
+   off; layoutMosaic then skips them, so they hold no column height). */
+.xtag-skel {
+  display: none;
+  position: absolute;
+  background: linear-gradient(100deg, #232931 30%, #47525f 50%, #232931 70%);
+  background-size: 300% 100%;
+  animation: xtag-skel 1.3s linear infinite;
+}
+
+#xtag-grid.xtag-grid-loading .xtag-skel { display: block; }
+
+/* Stagger so the sweep reads as motion, not a blink. */
+.xtag-skel:nth-of-type(3n + 2) { animation-delay: 0.12s; }
+.xtag-skel:nth-of-type(3n) { animation-delay: 0.24s; }
+
+#xtag-grid.xtag-light .xtag-skel {
+  background: linear-gradient(100deg, #e6eaee 30%, #c6cfd7 50%, #e6eaee 70%);
+  background-size: 300% 100%;
+}
+
+@keyframes xtag-skel {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xtag-skel,
+  .xtag-tile { animation: none; }
+}
+
+.xtag-grid-status {
+  padding: 14px 16px 24px;
+  text-align: center;
+  font-size: 13px;
+  color: rgb(113, 118, 123);
+  font-family: "TwitterChirp", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, Helvetica, Arial, sans-serif;
+}
