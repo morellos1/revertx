@@ -176,6 +176,16 @@ html.xtag-gridmode:not(.xtag-grid-borrowing)
   .xtag-tile { animation: none; }
 }
 
+/* The Mosaic menu item's second line: the rate-cost note, in X's own dim
+   menu-subtitle voice (readable on both menu surfaces). */
+.xtag-menu-note {
+  font-size: 11px;
+  line-height: 1.3;
+  margin-top: 2px;
+  font-weight: 400;
+  color: rgb(113, 118, 123);
+}
+
 .xtag-grid-status {
   padding: 14px 16px 24px;
   text-align: center;

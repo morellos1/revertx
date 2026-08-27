@@ -20,14 +20,16 @@
 // so a mixed photo+video mosaic has no single source. Videos keep X's view.
 //
 // X's media dropdown gets a third option: Videos / Photos / **Mosaic** (an
-// item cloned from X's own, so it wears their styling). The pick is
-// per-visit: it survives the photo viewer round-trip, and leaving the
-// media view clears it. There is no popup switch and no default-on; the
-// native grid stays what the Media tab opens.
+// item cloned from X's own, so it wears their styling). A pick PERSISTS
+// (user ask 2026-08-27): the dropdown items and the popup's "Media tab
+// opens" select write the same `mediaview` choice, so whatever was picked
+// last is what the Media tab opens next time. Escape is the one
+// per-visit override, and it writes nothing.
 //
 // Class names and ids keep the 1.x xtag-grid-* vocabulary so the CSS and
 // the comments below stay one-to-one with the ancestor file.
 import { pollFor } from "../core/poll";
+import { readMediaView, settingsReady, watchChoice } from "../core/settings";
 import { subscribeToMutations } from "./observer";
 
 const OVERLAY_ID = "xtag-grid";
@@ -131,12 +133,17 @@ const GRID_CACHE_MAX = 8;
 const PREFILL_BEARER = "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRC"
   + "OuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 
-// The one activation input: the reader picked Mosaic from X's media
-// dropdown. Strictly opt-in per visit (no stored default, no popup
-// switch): it survives the photo-viewer round-trip, and evaluate() clears
-// it the moment the reader leaves the media view. Picking Photos or
-// Videos from the dropdown, or pressing Escape, clears it explicitly.
-let chosen = false;
+// The Media-tab default, shared with the popup's select: "photos" (X's
+// native grid), "mosaic", or "videos". Dropdown picks persist into the
+// same key, so the dropdown IS the control (user ask 2026-08-27).
+const mediaView = watchChoice("mediaview", readMediaView);
+
+// The per-visit override. "feed" means "X's own view for now, whatever
+// the default" (Escape writes it, and it alone persists nothing);
+// "mosaic" bridges the beat between a dropdown pick and the storage
+// cache echoing it back. evaluate() clears it when the reader leaves the
+// media surface, so every fresh visit starts from the stored default.
+let override: "mosaic" | "feed" | null = null;
 // Whether the grid overlay is up RIGHT NOW. Any logic keyed on "the
 // reader scrolled down" must ask, because the driver walks the WINDOW
 // scroll behind the overlay. OUTSIDE this extension the contract is the
@@ -213,7 +220,9 @@ function shouldGrid(): boolean {
   // onPhotosFeed test like any other navigation. The lesson it taught
   // stands: a driver behind a hidden overlay reads clientHeight 0 as
   // "need more" forever, so the overlay must deactivate, not just hide.)
-  return chosen && onPhotosFeed();
+  if (!onPhotosFeed()) return false;
+  if (override === "feed") return false;
+  return override === "mosaic" || mediaView() === "mosaic";
 }
 
 function selectedMediaTab(): HTMLAnchorElement | null {
@@ -2158,10 +2167,10 @@ function evaluate(): void {
     overlay?.classList.remove("xtag-grid-viewing");
   } else {
     deactivate(active);
-    // The pick is per-visit: anywhere that is neither the media view nor
-    // the photo viewer over it forgets the choice, so the next Media-tab
-    // arrival is X's native grid until Mosaic is picked again.
-    if (!onPhotosFeed() && !onPhotoRoute()) chosen = false;
+    // The override is per-visit: anywhere that is neither the media view
+    // nor the photo viewer over it forgets it, so the next Media-tab
+    // arrival starts from the stored default again.
+    if (!onPhotosFeed() && !onPhotoRoute()) override = null;
   }
 }
 
@@ -2187,15 +2196,37 @@ function isMediaMenu(menu: HTMLElement): boolean {
     && items.some((item) => (item.textContent ?? "").trim() === tabText);
 }
 
+// Write-on-change: this is re-asserted per mutation batch now (see
+// assertMenuChecks), and an unguarded write would feed the observer a
+// characterData record every batch the menu stays open.
 function setItemText(item: HTMLElement, text: string): void {
   const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
   let node: Node | null;
   while ((node = walker.nextNode())) {
-    if ((node.textContent ?? "").trim()) {
-      node.textContent = text;
-      return;
-    }
+    const current = (node.textContent ?? "").trim();
+    if (!current) continue;
+    if (current !== text) node.textContent = text;
+    return;
   }
+}
+
+// The rate cost, said where the choice is made (user ask 2026-08-27): a
+// dim second line under the Mosaic item, appended to the same container
+// that holds the label (X's own two-line menu items use that shape). The
+// mosaic loads through the reader's photos-timeline budget; the driver's
+// floor keeps it from draining the bucket, but the cost belongs on the
+// label, not only in the status line once it bites.
+function appendRateNote(clone: HTMLElement): void {
+  const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT);
+  let node: Node | null = null;
+  while ((node = walker.nextNode())) {
+    if ((node.textContent ?? "").trim()) break;
+  }
+  const home = node?.parentElement?.parentElement ?? clone;
+  const note = document.createElement("div");
+  note.className = "xtag-menu-note";
+  note.textContent = "uses your account's rate limit";
+  home.appendChild(note);
 }
 
 function injectGridItem(menu: HTMLElement): void {
@@ -2212,6 +2243,7 @@ function injectGridItem(menu: HTMLElement): void {
   clone.setAttribute(GRID_ITEM_ATTR, "1");
   clone.querySelectorAll("svg").forEach((svg) => svg.remove());
   setItemText(clone, active ? "Mosaic ✓" : "Mosaic");
+  appendRateNote(clone);
   clone.style.cursor = "pointer";
   donor.insertAdjacentElement("afterend", clone);
   assertMenuChecks();
@@ -2225,9 +2257,19 @@ function injectGridItem(menu: HTMLElement): void {
 // the item after our pass and mounts the ✓ back, which is exactly the tab
 // label's re-assert problem one node over).
 function assertMenuChecks(): void {
-  if (!active) return;
   const menu = document.querySelector<HTMLElement>('[role="menu"]');
-  if (!menu || !menu.querySelector(`[${GRID_ITEM_ATTR}]`)) return;
+  const clone = menu?.querySelector<HTMLElement>(`[${GRID_ITEM_ATTR}]`);
+  if (!menu || !clone) return;
+  // THE CLONE'S LABEL FOLLOWS `active`, re-asserted per batch (user
+  // report 2026-08-27: "no check next to it until i click out and click
+  // the tab again"). The text used to be written once at inject time,
+  // and a menu can outlive an activation change: picking Mosaic
+  // activates under the still-open menu (closeMenu missed today's
+  // backdrop until the clientWidth fix below), which left a live mosaic
+  // behind an item still reading plain "Mosaic", beside X's ✓s this
+  // very function had hidden.
+  setItemText(clone, active ? "Mosaic ✓" : "Mosaic");
+  if (!active) return;
   const tab = selectedMediaTab();
   const tabText = tab ? tabOriginalLabel(tab) : "";
   for (const item of realMenuItems(menu)) {
@@ -2251,12 +2293,23 @@ function closeMenu(): void {
   if (!menu) return;
   const layers = document.getElementById("layers");
   if (menu && layers) {
+    // The LAYOUT viewport, never window.innerWidth: innerWidth counts the
+    // window scrollbar, and X sizes the backdrop to the layout viewport.
+    // Measured 2026-08-27 (the menu that survived a Mosaic pick):
+    // backdrop 1351x931 against innerWidth 1366; the 15px scrollbar kept
+    // the old test from ever matching, so this fell through to the
+    // synthetic Escape, which X ignores (re-measured the same day).
+    const vw = document.documentElement.clientWidth;
+    const vh = document.documentElement.clientHeight;
     const backdrop = Array.from(layers.querySelectorAll("div")).find((d) => {
       const r = d.getBoundingClientRect();
-      return r.width >= window.innerWidth - 2 && r.height >= window.innerHeight - 2
-        && !d.contains(menu);
+      return r.width >= vw - 2 && r.height >= vh - 2 && !d.contains(menu);
     });
     if (backdrop) {
+      // The full gesture: mousedown + mouseup + click is what today's
+      // backdrop was measured to answer.
+      backdrop.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      backdrop.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
       backdrop.click();
       return;
     }
@@ -2280,7 +2333,11 @@ function onMenuClick(event: MouseEvent): void {
   if (item.hasAttribute(GRID_ITEM_ATTR)) {
     event.preventDefault();
     event.stopPropagation();
-    chosen = true;
+    // The override answers NOW; the write makes it the default (the
+    // storage echo lands a beat later and changes nothing the override
+    // has not already said).
+    override = "mosaic";
+    void chrome.storage.local.set({ mediaview: "mosaic" });
     if (onPhotosFeed()) {
       closeMenu();
       evaluate();
@@ -2301,10 +2358,19 @@ function onMenuClick(event: MouseEvent): void {
     }
     return;
   }
-  // A REAL item in the media menu is an explicit choice of X's own view:
-  // Videos navigates away (the watcher drops the mosaic), Photos means
-  // X's native grid; either way the mosaic stands down.
-  chosen = false;
+  // A REAL item in the media menu is an explicit choice of X's own view,
+  // and it persists like the Mosaic pick does. Which view it names is
+  // read structurally, never by word (the labels follow the UI
+  // language): the item wearing the tab's own label IS the current view,
+  // and the other item is the other one.
+  const tab = selectedMediaTab();
+  const tabText = tab ? tabOriginalLabel(tab) : "";
+  const current = onPhotosFeed() ? "photos" : "videos";
+  const picked = (item.textContent ?? "").trim() === tabText
+    ? current
+    : current === "photos" ? "videos" : "photos";
+  override = "feed";
+  void chrome.storage.local.set({ mediaview: picked });
   deactivate();
 }
 
@@ -2396,7 +2462,10 @@ export function initMosaic(): void {
       && (target.isContentEditable || target.matches("input, textarea, select"))) {
       return;
     }
-    chosen = false;
+    // Per-visit only: Escape does NOT rewrite the stored default. Backing
+    // out of a mosaic for one profile is not a decision about every
+    // profile; the dropdown and the popup are where that decision lives.
+    override = "feed";
     deactivate();
   });
 
@@ -2423,6 +2492,17 @@ export function initMosaic(): void {
     assertMenuChecks();
     syncMenuHole();
   });
-  // No first evaluation: the mosaic is opt-in per visit and `chosen`
-  // starts false, so there is nothing to activate until a menu pick.
+  // A popup change applies on the spot in every open tab. The override
+  // is cleared first: the reader just made a NEW choice, and a stale
+  // per-visit Escape must not outrank it.
+  chrome.storage.onChanged.addListener((changes) => {
+    if (!changes["mediaview"]) return;
+    override = null;
+    evaluate();
+  });
+  // The first evaluation waits for the initial storage reads: the getter
+  // answers "photos" until then, and a direct load of the photos URL
+  // with a stored mosaic default would otherwise never activate (the 1.x
+  // lesson, inverted).
+  void settingsReady().then(evaluate);
 }

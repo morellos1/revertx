@@ -328,14 +328,21 @@ try {
   await setStorage({ mediagrid: false, likestab: true, postgrid: true, native: { likes: true, postgrid: false, flags: { history: true, carousel: false } } });
   await popup.reload(); await popup.waitForTimeout(300);
   const ui = await popup.evaluate(() => ({
-    mediagrid: document.getElementById("mediagrid").checked,
+    mediaview: document.getElementById("mediaview").value,
+    mosaicNote: !document.getElementById("mosaic-note").hidden,
     likestab: document.getElementById("likestab").checked,
     postgrid: document.getElementById("postgrid").checked,
     sharecopy: document.getElementById("sharecopy").checked,
     likesWarn: !document.getElementById("likestab-warn").hidden,
     postgridWarn: !document.getElementById("postgrid-warn").hidden,
   }));
-  check("J popup: boxes from storage, warning only for the gone flag", !ui.mediagrid && ui.likestab && ui.postgrid && ui.sharecopy && !ui.likesWarn && ui.postgridWarn, ui);
+  check("J popup: controls from storage, warning only for the gone flag", ui.mediaview === "videos" && !ui.mosaicNote && ui.likestab && ui.postgrid && ui.sharecopy && !ui.likesWarn && ui.postgridWarn, ui);
+  // The select writes the shared mediaview key, and the rate note rides the Mosaic pick only.
+  await popup.evaluate(() => { const v = document.getElementById("mediaview"); v.value = "mosaic"; v.dispatchEvent(new Event("change")); });
+  await popup.waitForTimeout(200);
+  st = await storage(["mediaview"]);
+  const noteAfter = await popup.evaluate(() => !document.getElementById("mosaic-note").hidden);
+  check("J popup: picking Mosaic writes mediaview and shows the rate note", st.mediaview === "mosaic" && noteAfter, { st, noteAfter });
   await popup.evaluate(() => { const b = document.getElementById("postgrid"); b.checked = false; b.dispatchEvent(new Event("change")); });
   await popup.waitForTimeout(200);
   st = await storage(["postgrid"]);
