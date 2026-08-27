@@ -28,6 +28,7 @@ worth a next version, not a rescue.
 | 1.x | A userland grid and a framed Likes pane, no longer shipped. |
 | 2.0.0 | Submitted 2026-08-21, superseded before publication. |
 | 2.0.1 | X's own layouts. The first 2.x the store publishes. |
+| 2.1 | UNRELEASED, branch `feature/mosaic-grid`. Adds the Mosaic view. Everything under "The Mosaic view" below applies to that submission and to no published version. |
 
 ## Listing
 
@@ -70,6 +71,19 @@ worth a next version, not a rescue.
 
 Keep that last paragraph.
 
+For 2.1, the summary and the first line stay as they are (the four
+restores are still the point) and one paragraph goes in before the
+closing two:
+
+> Mosaic, an extra Media tab view. Off unless you pick it from the tab's
+> own dropdown. It lays the same photos out at their real shapes instead
+> of square crops. It loads pages through your own account's rate limit,
+> so it says so where you pick it, and it stops loading before your
+> budget runs out.
+
+Then the "collects nothing, sends nothing" paragraph needs its "runs no
+background process" clause kept honest: it is still true.
+
 ## Single purpose
 
 > revertX modifies the interface of x.com to restore layouts and tabs the
@@ -77,11 +91,67 @@ Keep that last paragraph.
 > photo grid inside posts) and one navigation convenience in the share
 > menu.
 
+From 2.1, add to that sentence:
+
+> It also offers one alternative layout for the same media the tab already
+> shows, a variable-height mosaic in place of the square grid.
+
+Both halves are the same purpose: how one site's own content is laid out.
+The mosaic adds no new surface, no new site and no new data.
+
+## The Mosaic view (2.1, unreleased)
+
+Everything here describes `feature/mosaic-grid` and applies from the
+version that ships it. It is the first feature that makes a request, so it
+is the first that a reviewer will stop on. Answer plainly.
+
+**What it is.** An optional third choice in the Media tab's dropdown,
+beside Videos and Photos, off unless the user picks it. It draws the same
+photos the tab already shows, at their own aspect ratios instead of a
+square crop.
+
+**Where the photos come from.** Two sources, in this order:
+
+1. The responses x.com's own page already fetched. A content script in the
+   page's world wraps `fetch`/`XMLHttpRequest`, and hands the body of any
+   photo-timeline response to the extension. This costs no request; it
+   reads what the page asked for anyway.
+2. When the reader scrolls past what those responses carried, one request
+   for the next page, to the same x.com GraphQL endpoint the page itself
+   calls, with the same session cookie, from x.com. Nothing is sent
+   anywhere else, and nothing is stored beyond the tab's own memory.
+
+**Why the request is safe to allow.** The template for it is a request the
+page itself made, and it is refused unless its origin is x.com's own
+`/i/api/graphql/` (`assertOwnApi`, `src/content/mosaic.ts`). Thumbnails
+named by a response are refused unless they come from `twimg.com`
+(`isMediaHost`). Both checks exist for the same reason: the response
+reaches the extension over a DOM event that page script could also fire,
+and the request carries the reader's session, so neither the address nor
+the image host may be taken on trust.
+
+**Rate limiting.** X's photo-timeline budget is 50 requests per 15 minutes
+per account, shared with x.com's own timelines. The extension reads the
+`x-rate-limit-remaining` header on every response and stops requesting
+while 8 remain, telling the user when loading resumes, so the site's own
+feeds keep the rest. If x.com answers 429 anyway, it stops requesting
+until the window resets and holds off replaying for 10 minutes beyond
+that. Closing the view logs a receipt to the console: requests spent,
+budget left, and why loading stopped.
+
+**Remote code.** Still none. Timeline responses are data: they are parsed
+with `JSON.parse` and read for image URLs, dimensions and a paging cursor.
+No response is evaluated, and no script is fetched.
+
+**Data.** Still none collected. The requests go to x.com, in a page on
+x.com, with the user's own session. Nothing reaches the developer or any
+third party; there is no server to reach.
+
 ## Permission justifications
 
 | Field | Justification |
 | --- | --- |
-| `storage` | Two things, both local: the user's on/off preference for each of the four features, and a note of which of X's own feature flags the last page load found, so the popup can tell the user when X has removed a layout. No browsing history, no account data. |
+| `storage` | Two things, both local: the user's preference for each feature (from 2.1 the Media tab's is a choice of three views rather than a switch), and a note of which of X's own feature flags the last page load found, so the popup can tell the user when X has removed a layout. No browsing history, no account data. |
 | Host access | None requested. The content scripts are declared for `https://x.com/*` only. |
 | Remote code | None. No script is fetched or evaluated at runtime. |
 

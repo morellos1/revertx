@@ -44,3 +44,20 @@ and returns the `.xpi`.
 | Version | What happened |
 | --- | --- |
 | 2.0.1 | The first Firefox build. Same code as Chrome's 2.0.1. |
+| 2.1 | UNRELEASED, branch `feature/mosaic-grid`. Adds the Mosaic view. |
+
+## The Mosaic view (2.1, unreleased)
+
+`chrome-web-store.md` holds the full answer; this is what AMO asks
+differently.
+
+`data_collection_permissions` stays `{ required: ["none"] }`. The mosaic
+requests pages from x.com, in a page on x.com, with the user's own
+session, and reads the responses to lay photos out. Nothing is
+transmitted to the developer or a third party, which is what that field
+asks about. There is no server to transmit to.
+
+AMO reviews the source, so the two files to point at are
+`src/content/mosaic.ts` (the view, the rate floor, `assertOwnApi`) and
+`src/content/interceptor.ts` (the flag patch and the passive read of
+responses the page fetched anyway).
