@@ -77,6 +77,12 @@ function bufferPx(): number {
 // gated behind a cooldown after any 429.
 const PREFILL_MIN_TILES = 15;
 const API_COOLDOWN_MS = 10 * 60_000;
+// One page size, SETTLED (measured on /NASA, one cold run per bucket,
+// 2026-08-18): count=100 and count=200 returned receipts identical to
+// each other in every field, so X clamps the ask, and both big runs
+// ended 100 photos EARLY on a 3x cursor echo while count=20 sailed past.
+// Do not rebuild the page-size ladder.
+const PAGE_COUNT = 20;
 // A SHORT PAGE IS NOT THE END, and the rule that said it was (round 15's
 // SHORT_PAGE_MIN = 10) is REMOVED; do not bring it back. It read a page's
 // size as a position in the feed, and on the photos timeline those are
@@ -111,6 +117,23 @@ const API_COOLDOWN_MS = 10 * 60_000;
 const RATE_FLOOR = 8;
 let rateRemaining: number | null = null;
 let rateResetAt = 0; // epoch ms
+// --- the spend meter (1.x round 25, ported lean: nothing persisted) --------
+// remaining/reset pace the driver, but nothing else could say what a
+// mosaic'd profile actually COSTS. X sends x-rate-limit-limit on every
+// photos-timeline response (the denominator); the counters split the
+// spend into the part that is ours (apiPrefill's replay, driveLoop's
+// cursor extensions) and the part X's own page fetched anyway (passive,
+// free). logSpend prints the receipt on every deactivate: read it before
+// theorizing about the bucket. FOUND vs ADDED is the whole diagnosis:
+// found counts every media item our pages carried, added what became a
+// tile, and a wide gap means we paid for photos already on screen.
+let rateLimit: number | null = null;
+let rateLow: number | null = null;
+let ownPages = 0;
+let ownPhotos = 0;
+let ownAdded = 0;
+let passivePages = 0;
+let spendStartedAt = 0;
 // --- the per-handle grid cache (round 14) ----------------------------------
 // Leaving a profile and coming back used to re-fetch the whole grid from
 // scratch; back-and-forth browsing was a large share of the bucket burn.
@@ -154,21 +177,13 @@ let exhausted = false;
 let stalls = 0;
 let activatedAt = 0;
 let gridHandle = "";
-// The deepest window position the driver has reached this activation.
-// Everything down to here is already fetched by X, so when the user has
-// scrolled the grid back up (the top-snap pulls the window to the dock
-// point) and then wants more, the driver JUMPS straight back here instead
-// of re-walking thousands of already-harvested pixels one paced viewport
-// at a time (user report 2026-08-14 round 4: "i have to wait till the page
-// scroll auto scrolls all the way back down").
-let deepY = 0;
 // A tile click may be riding the feed's real photo anchor (scroll + click):
 // the driver must not fight over the window scroll meanwhile.
 let navigating = false;
 // True while OUR OWN code is clicking a real menu item (the Mosaic handler
 // rides X's Photos item to reach the photos view). Without it that
 // synthetic click re-enters onMenuClick and reads as the user explicitly
-// choosing X's own view, which clears `chosen` and the mosaic never
+// choosing X's own view, which clears the pick and the mosaic never
 // comes up (the 1.x bug, one rename over).
 let selfClicking = false;
 
@@ -259,7 +274,7 @@ function tabOriginalLabel(tab: HTMLElement): string {
 // Every media-path tab in the tablist, selected or not: the RESTORE half
 // must reach an unselected Media tab; a tab-switch away from the gridded
 // view deselects it before deactivate runs, and the selected-only lookup
-// left "Grid" written on it until React happened to re-render the strip.
+// left "Mosaic" written on it until React happened to re-render the strip.
 function allMediaTabs(): HTMLAnchorElement[] {
   const tabs = document.querySelectorAll<HTMLAnchorElement>(
     '[role="tablist"] a[role="tab"]');
@@ -1362,11 +1377,57 @@ let cursorOurs = false;
 // restore path already did.
 let extendBroken = false;
 // The API said the timeline is over: a TimelineTerminateTimeline(Bottom)
-// instruction in a payload, or our own cursor fetch coming back empty.
+// instruction in a payload, or a cursor that echoes past every retry.
 // This is what lets the skeleton tail settle in one beat instead of
 // waiting out ~6s of stall patience (round 14, user report).
 let feedEnded = false;
+// Several conditions can end a feed, and from the outside every one
+// looks the same: the skeletons stop and a count sits there. The reason
+// is recorded for the spend receipt; first writer wins.
+let feedEndReason = "";
+function endFeed(reason: string): void {
+  if (!feedEndReason) feedEndReason = reason;
+  feedEnded = true;
+}
 let emptyPages = 0;
+// --- THE CURSOR ECHO IS AMBIGUOUS (the /morellostorment bug, 2026-08-18) ---
+// An empty page whose Bottom cursor equals the cursor that asked for it
+// has TWO meanings, indistinguishable on sight: the true end (measured on
+// /echosluden: no terminate instruction, just the echo past the last
+// content page), or a mid-feed STALL (measured on /morellostorment: the
+// 1.x grid ended itself at 102 photos on one echo while X's own feed read
+// straight past to 148+; the photo filter runs server-side over the media
+// timeline, and an echo can mean "nothing matched this scan window, ask
+// again", which X's own client retries and we concluded). The only way to
+// tell the end from a stall is to ask again: the same cursor gets
+// ECHO_RETRIES more asks, spaced out (a stall is transient; hammering the
+// same cursor 180ms apart re-asks the same overloaded shard), and only a
+// cursor that echoes every time is the end. The price is ECHO_RETRIES
+// requests at every profile's true end. Do not simplify this back to
+// single-echo-ends.
+const ECHO_RETRIES = 2;
+const ECHO_RETRY_MS = 1500;
+let stallCursor: string | null = null;
+let stallCount = 0;
+
+// One echo observed for `cursor`. Returns true when the echo count says
+// this is the real end. Progress through noteCursorProgress resets it.
+function noteCursorEcho(cursor: string, source: string): boolean {
+  if (cursor === stallCursor) stallCount++;
+  else { stallCursor = cursor; stallCount = 1; }
+  if (stallCount > ECHO_RETRIES) {
+    endFeed(`cursor echoed ${stallCount}x (${source})`);
+    return true;
+  }
+  console.info(`[xtag] mosaic: cursor echo ${stallCount}/${ECHO_RETRIES + 1} `
+    + `(${source}); retrying before calling it the end`);
+  return false;
+}
+
+function noteCursorProgress(): void {
+  stallCursor = null;
+  stallCount = 0;
+}
 const payloadBuffer: { url: string; body: string; at: number; handle: string }[] = [];
 
 // X's OWN media total per handle, from the UserByScreenName responses the
@@ -1404,10 +1465,18 @@ function applyProfileCount(body: string): void {
   } catch { /* not a profile payload after all */ }
 }
 
-function noteRateHeaders(remaining: string | null, reset: string | null): void {
+function noteRateHeaders(remaining: string | null, reset: string | null,
+  limit: string | null = null): void {
+  if (limit !== null && limit !== "") {
+    const n = Number(limit);
+    if (Number.isFinite(n) && n > 0) rateLimit = n;
+  }
   if (remaining !== null && remaining !== "") {
     const n = Number(remaining);
-    if (Number.isFinite(n)) rateRemaining = n;
+    if (Number.isFinite(n)) {
+      rateRemaining = n;
+      if (rateLow === null || n < rateLow) rateLow = n;
+    }
   }
   if (reset !== null && reset !== "") {
     const t = Number(reset);
@@ -1431,6 +1500,32 @@ function ratePauseUntil(): number {
     return 0;
   }
   return rateResetAt;
+}
+
+// The visit's receipt, logged when the mosaic closes. Read it after a
+// normal read of a profile before theorizing about the bucket.
+function logSpend(): void {
+  if (ownPages === 0 && passivePages === 0) return;
+  const secs = Math.max(1, Math.round((Date.now() - spendStartedAt) / 1000));
+  const budget = rateLimit === null
+    ? "budget unknown (no x-rate-limit-limit seen)"
+    : `${rateRemaining ?? "?"}/${rateLimit} left`
+      + (rateLow !== null ? `, low-water ${rateLow}` : "");
+  const share = rateLimit !== null && rateLimit > 0
+    ? ` = ${(ownPages / rateLimit * 100).toFixed(1)}% of the window`
+    : "";
+  const perReq = ownPages > 0
+    ? ` (${(ownAdded / ownPages).toFixed(1)} new/request, `
+      + `${(ownPhotos / ownPages).toFixed(1)} found/request, count=${PAGE_COUNT})`
+    : "";
+  const stated = profileMediaCounts.get(gridHandle);
+  const why = feedEndReason
+    ? `; ended: ${feedEndReason}`
+    : (exhausted ? "; ended: unrecorded" : "; still loading");
+  console.info(`[xtag] mosaic spend on /${gridHandle}: ${ownPages} request(s) `
+    + `of ours${share}${perReq}, ${passivePages} passive, ${tiles.size} photos, `
+    + `${secs}s; ${budget}`
+    + `${stated === undefined ? "" : `, X states media_count=${stated}`}${why}`);
 }
 
 function fmtTime(at: number): string {
@@ -1478,9 +1573,18 @@ function applyPayload(url: string, body: string, srcHandle: string): void {
     if (media.length === 0 && srcHandle === gridHandle && cursors.length) {
       const reqCursor = requestCursorOf(url);
       if (reqCursor && cursors[cursors.length - 1] === reqCursor) {
-        feedEnded = true;
+        // X's own client retries ITS stalled cursors; those retries land
+        // here as identical echoes and must not vote on OUR frontier when
+        // the replay chain is already deeper (cursorOurs). Only an echo
+        // of the cursor we would ask with next is evidence about our end.
+        if (!cursorOurs || reqCursor === payloadCursor) {
+          noteCursorEcho(reqCursor, "passive page");
+        }
       }
     }
+    // Any page with content clears the stall count: the echo it was
+    // counting is either resolved or beside the point now.
+    if (media.length > 0) noteCursorProgress();
     // The template and cursor come only from a payload that provably
     // belongs to THIS profile (owned > 0): the buffer holds payloads for
     // minutes now, so a stale entry from a previously-viewed profile must
@@ -1496,7 +1600,7 @@ function applyPayload(url: string, body: string, srcHandle: string): void {
     // that DOES say terminate is still saying the timeline is over. A page's
     // SIZE says nothing: a sparse page mid-feed is the normal shape of a
     // photos timeline filtered server-side.
-    if (flags.terminated) feedEnded = true;
+    if (flags.terminated) endFeed("X sent TimelineTerminateTimeline");
   } catch (error) {
     console.warn("[xtag] media payload parse failed:", error);
   }
@@ -1536,7 +1640,7 @@ function drainPayloadBuffer(): void {
 // the entity's 1-BASED POSITION in the media array it was reached through,
 // and it OVERRIDES the number in expanded_url. MEASURED live 2026-08-27
 // (store dump on a 4-photo post): X writes /photo/1 on EVERY media entity
-// of a multi-photo post — four distinct media_url_https, four identical
+// of a multi-photo post: four distinct media_url_https, four identical
 // expanded_urls. The per-photo index exists only as array position (which
 // is also how X's own viewer routes: the n-th media opens /photo/<n>,
 // counted across the whole array, videos included). Building the href off
@@ -1578,14 +1682,39 @@ function mediaEntityOf(
 // type, the next page is always a Bottom cursor, and the end of the
 // timeline is a TimelineTerminateTimeline instruction whose direction
 // includes Bottom.
+//
+// X CARRIES A POST'S FIRST PHOTO TWICE (entities.media beside
+// extended_entities.media), so the raw walk finds it once per copy.
+// Nothing downstream broke (the tile map dedupes by href), but `found`
+// counted both, which flattered the spend receipt (1.x measured on
+// /NASA: 434 "found" against 197 real tiles). The dedupe is WITHIN ONE
+// PAGE only, deliberately: across pages a repeat is a real signal (we
+// bought something we already held), and the end detection reads
+// `found === 0` to spot the terminal page.
 function scanApiPayload(
+  node: unknown, media: ApiMedia[], cursors: string[],
+  flags?: { terminated: boolean },
+): void {
+  const start = media.length;
+  scanApiPayloadInto(node, media, cursors, flags);
+  const run = media.splice(start);
+  const seen = new Set<string>();
+  for (const m of run) {
+    const key = m.href.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    media.push(m);
+  }
+}
+
+function scanApiPayloadInto(
   node: unknown, media: ApiMedia[], cursors: string[],
   flags?: { terminated: boolean },
 ): void {
   if (Array.isArray(node)) {
     // An array whose direct elements are media entities is a tweet's media
     // array: mint each with its position (see mediaEntityOf). A minted
-    // entity is not scanned deeper — it holds no cursors, and the object
+    // entity is not scanned deeper; it holds no cursors, and the object
     // branch below would mint it AGAIN, unindexed.
     for (let i = 0; i < node.length; i++) {
       const item: unknown = node[i];
@@ -1595,7 +1724,7 @@ function scanApiPayload(
       if (m) {
         media.push(m);
       } else {
-        scanApiPayload(item, media, cursors, flags);
+        scanApiPayloadInto(item, media, cursors, flags);
       }
     }
     return;
@@ -1615,7 +1744,7 @@ function scanApiPayload(
     && typeof obj["direction"] === "string" && obj["direction"].includes("Bottom")) {
     flags.terminated = true;
   }
-  for (const value of Object.values(obj)) scanApiPayload(value, media, cursors, flags);
+  for (const value of Object.values(obj)) scanApiPayloadInto(value, media, cursors, flags);
 }
 
 // A tile's thumbnail must come from X's own media host. The href is already
@@ -1673,13 +1802,19 @@ function assertOwnApi(template: string): URL {
 
 async function fetchMediaPage(
   template: string, cursor: string | null,
-): Promise<{ added: number; found: number; next: string | null }> {
+): Promise<{ added: number; found: number; next: string | null; echoed: boolean }> {
   const url = assertOwnApi(template);
   const rawVars = url.searchParams.get("variables");
   if (!rawVars) throw new Error("template has no variables param");
   const vars = JSON.parse(rawVars) as Record<string, unknown>;
+  // The template is a request the PAGE made, and X's own deeper fetches
+  // carry a cursor of their own. Asking with no cursor means "from the
+  // top", so a leftover one has to go; otherwise the prefill's single
+  // replay re-asks for a page we already hold, and the answer is thrown
+  // away by the tile map.
   if (cursor) vars["cursor"] = cursor;
-  vars["count"] = 20;
+  else delete vars["cursor"];
+  vars["count"] = PAGE_COUNT;
   url.searchParams.set("variables", JSON.stringify(vars));
   const resp = await fetch(url.toString(), {
     credentials: "include",
@@ -1690,8 +1825,10 @@ async function fetchMediaPage(
       "x-twitter-auth-type": "OAuth2Session",
     },
   });
+  ownPages++;
   noteRateHeaders(resp.headers.get("x-rate-limit-remaining"),
-    resp.headers.get("x-rate-limit-reset"));
+    resp.headers.get("x-rate-limit-reset"),
+    resp.headers.get("x-rate-limit-limit"));
   if (resp.status === 429) noteRate429();
   if (!resp.ok) throw new Error(`UserMedia answered ${resp.status}`);
   const body: unknown = await resp.json();
@@ -1700,17 +1837,20 @@ async function fetchMediaPage(
   const flags = { terminated: false };
   scanApiPayload(body, media, cursors, flags);
   const next = cursors.length ? cursors[cursors.length - 1] : null;
-  if (flags.terminated) feedEnded = true;
-  // THE TERMINAL PAGE, read where the page is parsed rather than at one
-  // call site; every caller needs it now that a short page no longer ends
-  // anything. apiPrefill above is the one that matters: on a tiny profile
-  // it replays exactly one page, and if that page is the 717-byte cursor
-  // echo, nothing else was ever going to settle the grid undocked (the
-  // stall settle is dock-only by design). An empty page whose cursor still
-  // ADVANCES is left alone; that is the deleted-tweets shape, which X's
-  // own feed reads straight past.
-  if (media.length === 0 && (!next || next === cursor)) feedEnded = true;
-  return { added: mintApiTiles(media), found: media.length, next };
+  if (flags.terminated) endFeed("X sent TimelineTerminateTimeline (replay)");
+  // A missing cursor is an immediate end; no shape of stall withholds the
+  // cursor entirely. The ECHO is no longer ruled on here: it is ambiguous
+  // (true end vs mid-feed stall, see noteCursorEcho) and the callers own
+  // the retry, so this only reports the shape. An empty page whose cursor
+  // ADVANCES is also left alone; that is the deleted-tweets shape, which
+  // X's own feed reads straight past.
+  const echoed = media.length === 0 && next !== null && next === cursor;
+  if (media.length === 0 && !next) endFeed("terminal page: no cursor");
+  if (media.length > 0) noteCursorProgress();
+  ownPhotos += media.length;
+  const added = mintApiTiles(media);
+  ownAdded += added;
+  return { added, found: media.length, next, echoed };
 }
 
 async function apiPrefill(): Promise<void> {
@@ -1731,11 +1871,11 @@ async function apiPrefill(): Promise<void> {
     // A feed that already ENDED needs no replay whatever the tile count:
     // a profile with 3 photos is full at 3 (round 15).
     if (feedEnded || tiles.size >= PREFILL_MIN_TILES) {
-      console.info(`[xtag] grid prefill: ${tiles.size} photos, all passive`);
+      console.info(`[xtag] mosaic prefill: ${tiles.size} photos, all passive`);
       return;
     }
     if (Date.now() < apiCooldownUntil || ratePauseUntil()) {
-      console.warn("[xtag] grid prefill: in rate-limit cooldown; scroll-loading only");
+      console.warn("[xtag] mosaic prefill: in rate-limit cooldown; scroll-loading only");
       return;
     }
     const template = payloadTemplate ?? latestMediaTemplate(since);
@@ -1743,24 +1883,33 @@ async function apiPrefill(): Promise<void> {
       // Name what WAS seen: if X renames the photos-feed op, this line is
       // the whole diagnosis.
       const ops = Array.from(new Set(graphqlSeen.map((s) => opNameOf(s.name))));
-      console.warn("[xtag] grid prefill: no media timeline request observed; "
+      console.warn("[xtag] mosaic prefill: no media timeline request observed; "
         + "scroll-loading only. GraphQL ops seen: "
         + (ops.join(", ") || "(none)"));
       return;
     }
-    // At most ONE active page; replays share the page's own rate-limit
-    // bucket, and the round-9 three-page version emptied it (429s that
-    // took X's own feeds down with it).
-    const { added } = await fetchMediaPage(template, payloadCursor);
-    console.info(`[xtag] grid prefill: +${added} photos via one `
+    // At most ONE active page of CONTENT; replays share the page's own
+    // rate-limit bucket, and the round-9 three-page version emptied it
+    // (429s that took X's own feeds down with it). A stalled ask bought
+    // nothing, and this is the only asker on an undocked tiny profile:
+    // if it treats one echo as final, nothing else ever settles that
+    // grid (the stall settle is dock-only).
+    let page = await fetchMediaPage(template, payloadCursor);
+    while (page.echoed && !feedEnded
+      && !noteCursorEcho(payloadCursor ?? "", "prefill replay")) {
+      await new Promise((r) => setTimeout(r, ECHO_RETRY_MS));
+      if (!active || gridHandle !== startedFor) return;
+      page = await fetchMediaPage(template, payloadCursor);
+    }
+    console.info(`[xtag] mosaic prefill: +${page.added} photos via `
       + `${opNameOf(template)} replay`);
   } catch (error) {
     if (String(error).includes("429")) {
       apiCooldownUntil = Date.now() + API_COOLDOWN_MS;
-      console.warn("[xtag] grid prefill: rate limited (429); active replays "
+      console.warn("[xtag] mosaic prefill: rate limited (429); active replays "
         + "paused for 10 minutes; passive + scroll-loading continue");
     } else {
-      console.warn("[xtag] grid prefill failed (scroll-loading still works):", error);
+      console.warn("[xtag] mosaic prefill failed (scroll-loading still works):", error);
     }
   }
 }
@@ -1811,10 +1960,12 @@ function restoreGrid(): void {
   payloadCursor = cached.cursor;
   cursorOurs = Boolean(cached.template && cached.cursor);
   if (cached.template) payloadSeen = true;
-  feedEnded = cached.ended;
-  if (cached.ended) exhausted = true;
+  if (cached.ended) {
+    endFeed("cached end (memory)");
+    exhausted = true;
+  }
   if (tiles.size) setStatus(nphotos(tiles.size));
-  console.info(`[xtag] grid: ${added} tiles restored from cache`);
+  console.info(`[xtag] mosaic: ${added} tiles restored from cache`);
 }
 
 // --- the loading driver ----------------------------------------------------
@@ -1879,7 +2030,7 @@ async function driveLoop(): Promise<void> {
     if (!feedEnded) {
       const stated = profileMediaCounts.get(gridHandle);
       if (stated !== undefined && tiles.size >= stated) {
-        feedEnded = true;
+        endFeed(`media_count ceiling (${tiles.size} tiles >= ${stated} stated)`);
       }
     }
     // The API's own word that the timeline is over (round 14): settle NOW
@@ -1937,7 +2088,7 @@ async function driveLoop(): Promise<void> {
     // The round-13 catch-up jump is gone, and it had to go: it moved the
     // window from wherever it was to the deepest position the driver had
     // reached, on the premise that the window was the driver's to place. It is
-    // the reader's now, and `deepY` is only ever advanced inside a borrow that
+    // the reader's now, and a borrow that moves it
     // puts it straight back; so the gap that jump measured is just the
     // distance between the reader and a scroll position nobody is at, and
     // closing it would have thrown them down the page for nothing.
@@ -2002,30 +2153,41 @@ async function driveLoop(): Promise<void> {
     if (willExtend && payloadTemplate && payloadCursor) {
       try {
         const page = await fetchMediaPage(payloadTemplate, payloadCursor);
-        payloadCursor = page.next;
-        // Ours from here on: X's own hidden pages must not rewind us to a
-        // position we have already read past.
-        cursorOurs = true;
-        if (page.found === 0) {
-          // Terminal pages echo an empty body with the same (or no) cursor
-          //; fetchMediaPage ends the feed on that shape itself. What is
-          // left here is the EMPTY page that still advances: one is a
-          // stray (deleted tweets), two in a row is the end.
-          emptyPages++;
-          if (emptyPages >= 2) {
-            feedEnded = true;
+        if (page.echoed) {
+          // The ambiguous shape: end or stall (see noteCursorEcho). Keep
+          // the cursor, wait a widening beat, ask again; only a cursor
+          // that echoes every time is the end. emptyPages is NOT touched:
+          // that counter reads the deleted-tweets shape, where the cursor
+          // advances, and an echo would double-vote through it.
+          if (!noteCursorEcho(payloadCursor, "cursor extension")) {
+            lastStepAt = Date.now();
+            await sleep(ECHO_RETRY_MS * stallCount);
+            continue;
           }
         } else {
-          emptyPages = 0;
-          // A page WITH content ends the feed only by running out of
-          // cursor. Its size means nothing; see the SHORT_PAGE_MIN grave:
-          // the page that stopped /NASA at 49 carried 2 tweets and a
-          // perfectly good cursor to 36 more.
-          if (!page.next) feedEnded = true;
+          payloadCursor = page.next;
+          // Ours from here on: X's own hidden pages must not rewind us
+          // to a position we have already read past.
+          cursorOurs = true;
+          if (page.found === 0) {
+            // The EMPTY page that still advances: one is a stray
+            // (deleted tweets), two in a row is the end.
+            emptyPages++;
+            if (emptyPages >= 2) {
+              endFeed("two empty pages in a row");
+            }
+          } else {
+            emptyPages = 0;
+            // A page WITH content ends the feed only by running out of
+            // cursor. Its size means nothing; see the SHORT_PAGE_MIN
+            // grave: the page that stopped /NASA at 49 carried 2 tweets
+            // and a perfectly good cursor to 36 more.
+            if (!page.next) endFeed("page carried no next cursor");
+          }
         }
       } catch (error) {
         if (!String(error).includes("429")) {
-          console.warn("[xtag] grid: cursor extension failed; driving instead:", error);
+          console.warn("[xtag] mosaic: cursor extension failed; driving instead:", error);
           extendBroken = true;
           cursorOurs = false;
         }
@@ -2058,7 +2220,6 @@ async function driveLoop(): Promise<void> {
         // progress, never past what the renderer can fill in.
         window.scrollBy(0, Math.max(window.innerHeight, 800));
       }
-      if (window.scrollY > deepY) deepY = window.scrollY;
       // Held across the wait: X answers a scroll with a fetch, and putting the
       // window back before the answer lands would ask it for nothing.
       await sleep(DRIVE_STEP_MS);
@@ -2076,7 +2237,6 @@ function activate(): void {
   active = true;
   exhausted = false;
   stalls = 0;
-  deepY = 0;
   payloadSeen = false;
   payloadTemplate = null;
   payloadCursor = null;
@@ -2085,8 +2245,18 @@ function activate(): void {
   // gets a fresh one from the interceptor and deserves the cursor path back.
   extendBroken = false;
   feedEnded = false;
+  feedEndReason = "";
   emptyPages = 0;
+  noteCursorProgress();
   activatedAt = Date.now();
+  // The meter counts ONE visit. rateRemaining/rateResetAt deliberately
+  // do NOT reset here; the bucket is the reader's, and it spans profiles.
+  ownPages = 0;
+  ownPhotos = 0;
+  ownAdded = 0;
+  passivePages = 0;
+  rateLow = null;
+  spendStartedAt = Date.now();
   gridHandle = location.pathname.split("/")[1].toLowerCase();
   tiles.clear();
   try {
@@ -2096,7 +2266,7 @@ function activate(): void {
   } catch (error) {
     // Whatever failed, never leave the page as a black hole: the class
     // hides the window scrollbar, so it must not outlive a failed build.
-    console.warn("[xtag] media grid failed to build:", error);
+    console.warn("[xtag] mosaic failed to build:", error);
     active = false;
     overlay?.remove();
     overlay = gridEl = statusEl = firstSkel = null;
@@ -2122,6 +2292,7 @@ function activate(): void {
 
 function deactivate(restoreScroll = true): void {
   if (!active) return;
+  logSpend();
   stashGrid();
   active = false;
   stopSizing();
@@ -2222,7 +2393,10 @@ function appendRateNote(clone: HTMLElement): void {
   while ((node = walker.nextNode())) {
     if ((node.textContent ?? "").trim()) break;
   }
-  const home = node?.parentElement?.parentElement ?? clone;
+  let home = node?.parentElement?.parentElement ?? clone;
+  // The label can sit directly under the menuitem root; never let the
+  // walk land on an ancestor OUTSIDE the clone.
+  if (!clone.contains(home)) home = clone;
   const note = document.createElement("div");
   note.className = "xtag-menu-note";
   note.textContent = "uses your account's rate limit";
@@ -2365,12 +2539,16 @@ function onMenuClick(event: MouseEvent): void {
   // and the other item is the other one.
   const tab = selectedMediaTab();
   const tabText = tab ? tabOriginalLabel(tab) : "";
-  const current = onPhotosFeed() ? "photos" : "videos";
-  const picked = (item.textContent ?? "").trim() === tabText
-    ? current
-    : current === "photos" ? "videos" : "photos";
   override = "feed";
-  void chrome.storage.local.set({ mediaview: picked });
+  // No tab to compare against means no idea which item this was; stand
+  // down without rewriting the stored default on a guess.
+  if (tabText) {
+    const current = onPhotosFeed() ? "photos" : "videos";
+    const picked = (item.textContent ?? "").trim() === tabText
+      ? current
+      : current === "photos" ? "videos" : "photos";
+    void chrome.storage.local.set({ mediaview: picked });
+  }
   deactivate();
 }
 
@@ -2408,6 +2586,7 @@ export function initMosaic(): void {
       }
       if (typeof parsed.url === "string" && typeof parsed.body === "string"
         && parsed.body) {
+        passivePages++;
         handleMediaPayload(parsed.url, parsed.body);
       }
     } catch { /* not a payload of ours */ }
@@ -2484,7 +2663,7 @@ export function initMosaic(): void {
         node.querySelectorAll<HTMLElement>('[role="menu"]').forEach(injectGridItem);
       });
     }
-    // The tab wears "Grid" while the grid is the view on screen, X's ✓
+    // The tab wears "Mosaic" while the mosaic is the view on screen, X's ✓
     // stays off the Photos item (React re-renders restore both, so
     // re-assert per batch), and an open menu gets its clip-path hole
     // (see punchHole).
