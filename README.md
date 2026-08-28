@@ -70,6 +70,9 @@ out. It stops asking well before the allowance is used up, and the view
 says when loading continues. Going back to a profile you already read
 shows the saved grid instead of loading it again.
 
+When the allowance runs low, an "Image quota" pill at the bottom of
+the view shows what is left and when it resets.
+
 If the allowance still runs out (normal browsing spends it too), X's
 own photo pages fail with "Something went wrong" for the rest of the
 window. revertX then puts one line under the tab bar that says when

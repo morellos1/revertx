@@ -121,26 +121,31 @@ and the request carries the reader's session, so neither the address nor
 the image host may be taken on trust.
 
 **Rate limiting.** X's photo-timeline budget is 50 requests per 15 minutes
-per account, shared with x.com's own timelines. The extension reads the
-`x-rate-limit-remaining` header on every response, slows its own pages
-down once the budget runs low, and stops requesting while 12 remain,
-telling the user when loading resumes, so the site's own feeds keep the
-rest. Once the budget runs low, a small pill at the bottom right of the
-photos view names what is left and when the window resets, and leaves
-with the window. If x.com answers 429 anyway, it stops requesting
-until the window resets and holds off replaying for 10 minutes beyond
-that. Closing the view logs a receipt to the console: requests spent,
-budget left, and why loading stopped.
+per account, shared with x.com's own timelines. While x.com's own page
+is fetching the same timeline, the extension does not ask at all; it
+reads those responses passively, so a scroll costs the same as on X's
+own grid. When it does ask, it reads the rate headers on every
+response, slows its own pages down once the budget runs low, and stops
+requesting while 12 remain, telling the user when loading resumes, so
+the site's own feeds keep the rest. If x.com answers 429 anyway, it
+stops requesting until the window resets and holds off replaying for
+10 minutes beyond that. Closing the view logs a receipt to the
+console: requests spent, budget left, and why loading stopped.
 
-If the budget is spent anyway, x.com's own photos view fails for the
-rest of the window ("Something went wrong"). The extension then puts a
-one-line note under the profile's tab strip naming the time the window
-resets, and removes it when it does. The note is the only DOM the
-extension adds to the native photos view, and only in that state. Its
-picture of the window (remaining, reset time, last 429) is mirrored
-into the tab's sessionStorage under one key, so a reload while limited
-does not forget it; the entry expires with the window and nothing
-leaves the page.
+Once the budget runs low, an "Image quota" pill (the count, a small
+fill bar, the reset time) sits at the bottom of the photos view and
+leaves with the window. If the budget is spent anyway, x.com's own
+photos view fails for the rest of the window ("Something went wrong");
+a one-line note under the profile's tab strip then names the time the
+window resets, and is removed when it does. x.com can also withhold
+photos without a 429 (empty pages while the budget headers stay
+healthy); when that empties the view, the same note says "X sent no
+photos · try again later". The pill and the note are the only DOM the
+extension adds to the native photos view, and only in those states.
+The extension's picture of the window (remaining, limit, reset time,
+last 429) is mirrored into the tab's sessionStorage under one key, so
+a reload while limited does not forget it; the entry expires with the
+window and nothing leaves the page.
 
 **Remote code.** Still none. Timeline responses are data: they are parsed
 with `JSON.parse` and read for image URLs, dimensions and a paging cursor.
