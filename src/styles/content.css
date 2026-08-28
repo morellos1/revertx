@@ -184,6 +184,24 @@ html.xtag-gridmode:not(.xtag-grid-borrowing)
     Roboto, Helvetica, Arial, sans-serif;
 }
 
+/* The bottom-right quota pill (assertQuotaPill): what is left of X's
+   photo-loading window once it runs low, on the grid and on X's own
+   photos view alike. Sits above X's bottom-right drawer. */
+#xtag-quota {
+  position: fixed;
+  right: 16px;
+  bottom: 84px;
+  z-index: 1001;
+  padding: 8px 14px;
+  border-radius: 9999px;
+  background: rgba(22, 24, 28, 0.92);
+  border: 1px solid rgb(47, 51, 54);
+  color: rgb(231, 233, 234);
+  font-size: 13px;
+  font-family: "TwitterChirp", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, Helvetica, Arial, sans-serif;
+}
+
 /* One line under the profile's tab strip while X's own photos view is
    rate-limited (see assertRateNotice). X's small grey reads on both
    themes. */

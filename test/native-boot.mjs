@@ -386,20 +386,30 @@ try {
   check("K a reload remembers the window: the notice returns without a new 429",
     typeof note === "string" && note.includes("loading limit"), note);
 
-  // L: the popup shows the photo-loading budget while its window runs
-  await setStorage({ rate: { remaining: 12, limit: 50, resetAt: Date.now() + 600000, at: Date.now() } });
-  await popup.reload(); await popup.waitForTimeout(300);
-  const readRateLine = () => popup.evaluate(() => { const el = document.getElementById("rate-line"); return el.hidden ? null : el.textContent; });
-  let rateLine = await readRateLine();
-  check("L popup: budget line shows count, limit and countdown", typeof rateLine === "string" && rateLine.includes("12 of 50") && /\d+m \d+s/.test(rateLine), rateLine);
-  await setStorage({ rate: { remaining: 0, limit: 50, resetAt: Date.now() + 600000, at: Date.now() } });
-  await popup.waitForTimeout(300);
-  rateLine = await readRateLine();
-  check("L popup: an empty budget says used up", typeof rateLine === "string" && rateLine.includes("used up"), rateLine);
-  await setStorage({ rate: { remaining: 12, limit: 50, resetAt: Date.now() - 1000, at: Date.now() } });
-  await popup.waitForTimeout(300);
-  rateLine = await readRateLine();
-  check("L popup: an expired window hides the line", rateLine === null, rateLine);
+  // L: the quota pill shows bottom-right once the window runs low
+  await page.goto("https://x.com/NASA/media?filter=photo"); await settle(page);
+  const emitRate = (remaining) => page.evaluate((rem) => {
+    document.dispatchEvent(new CustomEvent("xtag:media-payload", { detail: JSON.stringify({
+      url: "https://x.com/i/api/graphql/abc/UserPhotoTimeline", body: "", status: 200,
+      remaining: String(rem), reset: String(Math.floor(Date.now() / 1000) + 600), kind: "media",
+    }) }));
+  }, remaining);
+  const readPill = () => page.evaluate(() => document.getElementById("xtag-quota")?.textContent ?? null);
+  await emitRate(40); await settle(page, 200);
+  let pill = await readPill();
+  check("L a healthy budget shows no pill", pill === null, pill);
+  await emitRate(17); await settle(page, 200);
+  pill = await readPill();
+  check("L a low budget shows the pill with the count and reset time",
+    typeof pill === "string" && pill.startsWith("17 left") && /\d/.test(pill), pill);
+  await emitRate(0); await settle(page, 200);
+  pill = await readPill();
+  check("L an empty budget says back at", typeof pill === "string" && pill.startsWith("0 left"), pill);
+  await page.click('a[role="tab"][href="/NASA"]');
+  await page.evaluate(() => document.querySelector("main").appendChild(document.createElement("div")));
+  await settle(page, 300);
+  pill = await readPill();
+  check("L off the photos feed: the pill leaves", pill === null, pill);
 
   const failed = results.filter((x) => !x.ok).length;
   console.log(`\n${results.length - failed}/${results.length} passed`);

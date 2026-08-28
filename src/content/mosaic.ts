@@ -1708,6 +1708,7 @@ function noteRateHeaders(remaining: string | null, reset: string | null,
     if (Number.isFinite(t) && t > 0) rateResetAt = t * 1000;
   }
   saveRateState();
+  assertQuotaPill();
 }
 
 function noteRate429(): void {
@@ -1717,6 +1718,7 @@ function noteRate429(): void {
   // A headerless 429 still pauses: a 15-min window is X's standard.
   if (rateResetAt < Date.now()) rateResetAt = Date.now() + 15 * 60_000;
   saveRateState();
+  assertQuotaPill();
 }
 
 // --- the rate picture survives the page (same tab) -------------------------
@@ -1729,7 +1731,6 @@ function noteRate429(): void {
 // mirrored into sessionStorage (per tab; nothing leaves the page) and
 // restored at boot; an entry expires with the window it describes.
 const RATE_STATE_KEY = "xtag:rate";
-let lastRateMirror = "";
 
 function saveRateState(): void {
   try {
@@ -1738,19 +1739,6 @@ function saveRateState(): void {
       cooldownUntil: apiCooldownUntil,
     }));
   } catch { /* private mode etc.; the page-lifetime picture still works */ }
-  // The popup's copy: what X last reported, so the reader can check the
-  // budget before hitting it. Write-on-change (`at` alone changing is
-  // not a change worth a storage event).
-  const key = `${rateRemaining}|${rateLimit}|${rateResetAt}`;
-  if (key !== lastRateMirror) {
-    lastRateMirror = key;
-    void chrome.storage.local.set({
-      rate: {
-        remaining: rateRemaining, limit: rateLimit, resetAt: rateResetAt,
-        at: Date.now(),
-      },
-    });
-  }
 }
 
 function loadRateState(): void {
@@ -1849,6 +1837,41 @@ function statusLine(): string {
 const RATE_NOTE_ID = "xtag-rate-note";
 const RATE_429_FRESH_MS = 16 * 60_000;
 let last429At = 0;
+
+// --- the quota pill --------------------------------------------------------
+// "17 left", where the reader can see it while scrolling: once the
+// window runs low (the same threshold that slows our pages), a small
+// pill sits at the bottom right of any photos view, grid or native,
+// and leaves when the window resets or the reader navigates away. It
+// lives on body, like the overlay: React never reconciles body's
+// children, so there is nothing to fight and nothing to re-render it
+// out. Asserted wherever the numbers change (noteRateHeaders,
+// noteRate429) and on every mutation batch for route changes.
+const QUOTA_ID = "xtag-quota";
+const QUOTA_SHOW_AT = 25;
+
+function assertQuotaPill(): void {
+  const existing = document.getElementById(QUOTA_ID);
+  const wanted = onPhotosFeed() && rateRemaining !== null
+    && rateRemaining <= QUOTA_SHOW_AT && Date.now() < rateResetAt;
+  if (!wanted) {
+    existing?.remove();
+    return;
+  }
+  const text = rateRemaining === 0
+    ? `0 left · back at ${fmtTime(rateResetAt)}`
+    : `${rateRemaining} left · resets ${fmtTime(rateResetAt)}`;
+  if (existing) {
+    if (existing.textContent !== text) existing.textContent = text;
+    return;
+  }
+  const pill = document.createElement("div");
+  pill.id = QUOTA_ID;
+  pill.textContent = text;
+  pill.title = "Photo page loads left in X's 15-minute window, shared "
+    + "with normal browsing. This pill is from revertX.";
+  document.body.appendChild(pill);
+}
 
 function assertRateNotice(): void {
   const existing = document.getElementById(RATE_NOTE_ID);
@@ -3044,6 +3067,7 @@ export function initMosaic(): void {
     assertMenuChecks();
     syncMenuHole();
     assertRateNotice();
+    assertQuotaPill();
   });
   // A popup change applies on the spot in every open tab. The override
   // is cleared first: the reader just made a NEW choice, and a stale
@@ -3062,5 +3086,6 @@ export function initMosaic(): void {
   void settingsReady().then(() => {
     evaluate();
     assertRateNotice();
+    assertQuotaPill();
   });
 }

@@ -125,8 +125,9 @@ per account, shared with x.com's own timelines. The extension reads the
 `x-rate-limit-remaining` header on every response, slows its own pages
 down once the budget runs low, and stops requesting while 12 remain,
 telling the user when loading resumes, so the site's own feeds keep the
-rest. The popup shows the last reported budget and a countdown to the
-window's reset. If x.com answers 429 anyway, it stops requesting
+rest. Once the budget runs low, a small pill at the bottom right of the
+photos view names what is left and when the window resets, and leaves
+with the window. If x.com answers 429 anyway, it stops requesting
 until the window resets and holds off replaying for 10 minutes beyond
 that. Closing the view logs a receipt to the console: requests spent,
 budget left, and why loading stopped.
@@ -153,7 +154,7 @@ third party; there is no server to reach.
 
 | Field | Justification |
 | --- | --- |
-| `storage` | Three things, all local: the user's preference for each feature (the Media tab's is a choice of three views), a note of which of X's own feature flags the last page load found (so the popup can tell the user when X has removed a layout), and the photo-loading budget numbers X last reported (so the popup can show them with a reset countdown). No browsing history, no account data. |
+| `storage` | Two things, both local: the user's preference for each feature (the Media tab's is a choice of three views), and a note of which of X's own feature flags the last page load found, so the popup can tell the user when X has removed a layout. No browsing history, no account data. |
 | Host access | None requested. The content scripts are declared for `https://x.com/*` only. |
 | Remote code | None. No script is fetched or evaluated at runtime. |
 
