@@ -172,7 +172,7 @@ collected; if asked, point at the Privacy section of the README.
 | Asset | Size | File |
 | --- | --- | --- |
 | Store icon | 128x128 | `extension/icons/icon128.png` |
-| Screenshots | 1280x800 | `assets/store/01` to `04` |
+| Screenshots | 1280x800 | `assets/store/01` to `05` |
 | Small promo tile | 440x280 | `assets/store/promo-tile-440x280.png` |
 | Marquee promo tile | 1400x560 | `assets/store/promo-marquee-1400x560.png`, source in `assets/promo-marquee.svg` |
 
@@ -182,6 +182,7 @@ collected; if asked, point at the Privacy section of the README.
 | `02-likes-tab.png` | Likes tab back on your own profile |
 | `03-post-grid.png` | Posts with 2, 3 or 4 images back in the old grid |
 | `04-share-menu.png` | Copy link back on top |
+| `05-masonry-mosaic.png` | Masonry and Mosaic show every photo at its own shape |
 
 Captions are rendered into the image; the store has no caption field.
 Each one is a caption column beside a page-only capture of live x.com
