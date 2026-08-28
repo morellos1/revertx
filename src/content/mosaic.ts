@@ -676,9 +676,10 @@ const RATIO_MAX = 2.5;
 //
 // So the choice is the reader's, as two modes:
 //   MASONRY  every tile one column; the plain shortest-column masonry.
-//   MOSAIC   anything wider than 4:3 takes the ENTIRE ROW at the grid's
-//            full width, and everything else flows into JUSTIFIED rows
-//            (see layoutWideRows).
+//   MOSAIC   anything wider than 4:3 usually takes the ENTIRE ROW at
+//            the grid's full width, and everything else flows into
+//            JUSTIFIED rows (see layoutWideRows for when a wide tile
+//            joins a row instead).
 // 4:3 itself stays a single cell in both modes: at ~139px tall it never
 // reads as tiny, and full-rowing it would turn a plain-photos profile
 // into a one-across feed.
@@ -701,6 +702,34 @@ function tileRatio(el: HTMLElement): number {
   const r = Number(el.dataset.xtagRatio);
   if (!Number.isFinite(r) || r <= 0) return 1;
   return Math.min(Math.max(r, RATIO_MIN), RATIO_MAX);
+}
+
+// A tile can outgrow its thumb. `small` fits within 680px on the long
+// edge, so a portrait's small variant is only 680/ratio pixels wide,
+// and a tile laid out wider than that upscales visibly (the stretched
+// final row is the one case left that gets this big). When a layout
+// pass hands a tile more CSS width than its small thumb carries, the
+// img steps up to `medium` (fits within 1200px), upward only, at most
+// once. Thumbs come from the image CDN and spend nothing from the API
+// rate bucket; the small thumb stays on screen until the sharper one
+// arrives, so the swap never blocks or shifts anything. The RAW ratio
+// decides, not tileRatio's clamped one: the thumb has the image's true
+// shape whatever the tile shows.
+const THUMB_SMALL_EDGE = 680;
+
+function assertThumbScale(el: HTMLElement, cssWidth: number): void {
+  const img = el.firstElementChild;
+  if (!(img instanceof HTMLImageElement)) return;
+  const raw = Number(el.dataset.xtagRatio);
+  const ratio = Number.isFinite(raw) && raw > 0 ? raw : 1;
+  const smallWidth = ratio > 1 ? THUMB_SMALL_EDGE / ratio : THUMB_SMALL_EDGE;
+  if (cssWidth <= smallWidth) return;
+  try {
+    const url = new URL(img.src);
+    if (url.searchParams.get("name") !== "small") return;
+    url.searchParams.set("name", "medium");
+    img.src = url.toString();
+  } catch { /* not a thumb URL we understand; keep it */ }
 }
 
 function layoutMosaic(): void {
@@ -741,6 +770,7 @@ function layoutColumns(children: HTMLElement[], cols: number,
     child.style.height = `${h}px`;
     child.style.left = `${((colW + COL_GAP_PX) * col).toFixed(2)}px`;
     child.style.top = `${tops[col].toFixed(2)}px`;
+    assertThumbScale(child, colW);
     tops[col] += h + COL_GAP_PX;
     // The container's height is the last tile's bottom, not the next
     // top: a trailing gap would pad the scroll range for nothing.
@@ -758,17 +788,24 @@ function layoutColumns(children: HTMLElement[], cols: number,
 // flow into rows in feed order, and every closed row is scaled to one
 // shared height at which the widths, kept proportional to each tile's
 // aspect, fill the grid exactly. An ordinary row therefore crops
-// nothing at all. Wide tiles (ratio < SPAN_RATIO_MAX) still take a row
-// of their own at their exact ratio, which in a justified layout is just
-// a one-tile row. The two deliberate crop cases, both capped by
-// ROW_MAX_FRACTION so no tile becomes a grid-width monolith:
-//   - a partial row force-closed by an arriving wide tile stretches to
-//     fill rather than leaving a pocket;
-//   - the FINAL row stretches only once the feed is exhausted. While
-//     loading it keeps natural sizes, so the one place a right-edge gap
-//     can show is under the skeleton shimmer that continues the row.
-// Skeletons never take a wide row of their own: a 400px shimmer slab
-// reads as a defect, not as loading.
+// nothing at all. Wide tiles (ratio < SPAN_RATIO_MAX) take a row of
+// their own at their exact ratio, which in a justified layout is just a
+// one-tile row; but ONLY when the pending row can close cleanly (empty,
+// or stretchable without hitting the rowMax clamp). Otherwise the wide
+// tile joins the pending row as its big member and the row flows shut
+// normally. Without that rule, a portrait sandwiched between two
+// landscapes force-closes alone: stretched to the full grid width,
+// clamped by ROW_MAX_FRACTION, it loses about half its height to the
+// crop and upscales past its thumb. Absorbed, the same portrait sits
+// uncropped beside the landscape.
+//
+// The one deliberate crop case left is the FINAL row, which stretches
+// only once the feed is exhausted, capped by ROW_MAX_FRACTION so no
+// tile becomes a grid-width monolith. While loading it keeps natural
+// sizes, so the one place a right-edge gap can show is under the
+// skeleton shimmer that continues the row. Skeletons never take a wide
+// row of their own: a 400px shimmer slab reads as a defect, not as
+// loading.
 //
 // Row closure depends only on the tiles BEFORE the closing point, so an
 // appended page can never re-shape a closed row; the no-shift rule
@@ -789,6 +826,7 @@ function layoutWideRows(children: HTMLElement[], width: number,
     el.style.height = `${Math.round(h)}px`;
     el.style.left = `${x.toFixed(2)}px`;
     el.style.top = `${y.toFixed(2)}px`;
+    assertThumbScale(el, w);
   };
   const closeRow = (stretch: boolean): void => {
     if (row.length === 0) return;
@@ -812,7 +850,8 @@ function layoutWideRows(children: HTMLElement[], width: number,
   };
   for (const child of children) {
     if (tileRatio(child) < SPAN_RATIO_MAX
-      && !child.classList.contains("xtag-skel")) {
+      && !child.classList.contains("xtag-skel")
+      && (row.length === 0 || naturalH(row) <= rowMax)) {
       closeRow(true);
       const h = Math.round(width * tileRatio(child));
       place(child, 0, width, h);

@@ -48,7 +48,7 @@ Reload x.com after a change.
 **Media tab opens** is a choice of four: the **photo grid** (X's own),
 **Masonry**, **Mosaic**, or **Videos** (X's default). Masonry is
 Pinterest-style columns. Mosaic lays photos into justified rows with no
-gaps, and a landscape photo gets a full row of its own. The Media tab's
+gaps, and a landscape photo usually gets a full row of its own. The Media tab's
 own dropdown carries the same four, and picking one there sets it for
 next time too. Press Escape in either view to drop back to X's grid for
 that visit only.
@@ -93,8 +93,8 @@ Each feature uses a different trick. None of them rewrites X's code.
   responses, so tiles are placed at the right shape before any image
   loads and nothing on screen shifts as the page fills. Masonry is
   shortest-column placement; Mosaic is justified rows with no gaps,
-  where a photo wider than 4:3 takes the full row. The images are X's
-  thumbnails and every tile opens X's own viewer.
+  where a photo wider than 4:3 usually takes the full row. The images
+  are X's thumbnails and every tile opens X's own viewer.
 
 The flags are patched through an accessor on `window.__INITIAL_STATE__`.
 The popup warns when X no longer ships a flag, and the switch does nothing.
