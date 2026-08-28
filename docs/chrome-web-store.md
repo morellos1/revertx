@@ -122,9 +122,11 @@ the image host may be taken on trust.
 
 **Rate limiting.** X's photo-timeline budget is 50 requests per 15 minutes
 per account, shared with x.com's own timelines. The extension reads the
-`x-rate-limit-remaining` header on every response and stops requesting
-while 8 remain, telling the user when loading resumes, so the site's own
-feeds keep the rest. If x.com answers 429 anyway, it stops requesting
+`x-rate-limit-remaining` header on every response, slows its own pages
+down once the budget runs low, and stops requesting while 12 remain,
+telling the user when loading resumes, so the site's own feeds keep the
+rest. The popup shows the last reported budget and a countdown to the
+window's reset. If x.com answers 429 anyway, it stops requesting
 until the window resets and holds off replaying for 10 minutes beyond
 that. Closing the view logs a receipt to the console: requests spent,
 budget left, and why loading stopped.
@@ -151,7 +153,7 @@ third party; there is no server to reach.
 
 | Field | Justification |
 | --- | --- |
-| `storage` | Two things, both local: the user's preference for each feature (the Media tab's is a choice of three views), and a note of which of X's own feature flags the last page load found, so the popup can tell the user when X has removed a layout. No browsing history, no account data. |
+| `storage` | Three things, all local: the user's preference for each feature (the Media tab's is a choice of three views), a note of which of X's own feature flags the last page load found (so the popup can tell the user when X has removed a layout), and the photo-loading budget numbers X last reported (so the popup can show them with a reset countdown). No browsing history, no account data. |
 | Host access | None requested. The content scripts are declared for `https://x.com/*` only. |
 | Remote code | None. No script is fetched or evaluated at runtime. |
 

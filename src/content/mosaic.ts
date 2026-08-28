@@ -90,8 +90,11 @@ const PAGE_COUNT = 20;
 // x-rate-limit-remaining/reset (the interceptor forwards them, and our
 // own replays read them directly); when remaining hits the floor the
 // driver stops asking for more and says when loading resumes, so the
-// reader's own timelines keep the rest of the budget.
-const RATE_FLOOR = 8;
+// reader's own timelines keep the rest of the budget. The floor is 12,
+// not a token: X's native photos view draws on this same bucket, so
+// what the floor reserves is exactly how much plain photo-grid
+// browsing survives a long mosaic session.
+const RATE_FLOOR = 12;
 let rateRemaining: number | null = null;
 let rateResetAt = 0; // epoch ms
 // --- the spend meter (nothing persisted) -----------------------------------
@@ -1718,6 +1721,7 @@ function noteRate429(): void {
 // mirrored into sessionStorage (per tab; nothing leaves the page) and
 // restored at boot; an entry expires with the window it describes.
 const RATE_STATE_KEY = "xtag:rate";
+let lastRateMirror = "";
 
 function saveRateState(): void {
   try {
@@ -1726,6 +1730,19 @@ function saveRateState(): void {
       cooldownUntil: apiCooldownUntil,
     }));
   } catch { /* private mode etc.; the page-lifetime picture still works */ }
+  // The popup's copy: what X last reported, so the reader can check the
+  // budget before hitting it. Write-on-change (`at` alone changing is
+  // not a change worth a storage event).
+  const key = `${rateRemaining}|${rateLimit}|${rateResetAt}`;
+  if (key !== lastRateMirror) {
+    lastRateMirror = key;
+    void chrome.storage.local.set({
+      rate: {
+        remaining: rateRemaining, limit: rateLimit, resetAt: rateResetAt,
+        at: Date.now(),
+      },
+    });
+  }
 }
 
 function loadRateState(): void {
@@ -1743,6 +1760,13 @@ function loadRateState(): void {
       apiCooldownUntil = Math.max(apiCooldownUntil, s["cooldownUntil"]);
     }
   } catch { /* a corrupt entry teaches nothing */ }
+}
+
+// Low-budget pacing: our pages slow down as the bucket drains, so a
+// deep scroll burns smoothly toward the floor instead of racing there,
+// and X's own client keeps room between our pages.
+function drivePaceMs(): number {
+  return rateRemaining !== null && rateRemaining <= 25 ? 1200 : DRIVE_STEP_MS;
 }
 
 // Non-zero = the driver must not cause fetches until this epoch-ms time.
@@ -2497,7 +2521,7 @@ async function driveLoop(): Promise<void> {
         // extension resumes from the same spot after the reset.
       }
       lastStepAt = Date.now();
-      await sleep(DRIVE_STEP_MS);
+      await sleep(drivePaceMs());
       continue;
     }
     // THE DEGRADED PATH, and it is the only one left that moves the window.

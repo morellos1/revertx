@@ -386,6 +386,21 @@ try {
   check("K a reload remembers the window: the notice returns without a new 429",
     typeof note === "string" && note.includes("loading limit"), note);
 
+  // L: the popup shows the photo-loading budget while its window runs
+  await setStorage({ rate: { remaining: 12, limit: 50, resetAt: Date.now() + 600000, at: Date.now() } });
+  await popup.reload(); await popup.waitForTimeout(300);
+  const readRateLine = () => popup.evaluate(() => { const el = document.getElementById("rate-line"); return el.hidden ? null : el.textContent; });
+  let rateLine = await readRateLine();
+  check("L popup: budget line shows count, limit and countdown", typeof rateLine === "string" && rateLine.includes("12 of 50") && /\d+m \d+s/.test(rateLine), rateLine);
+  await setStorage({ rate: { remaining: 0, limit: 50, resetAt: Date.now() + 600000, at: Date.now() } });
+  await popup.waitForTimeout(300);
+  rateLine = await readRateLine();
+  check("L popup: an empty budget says used up", typeof rateLine === "string" && rateLine.includes("used up"), rateLine);
+  await setStorage({ rate: { remaining: 12, limit: 50, resetAt: Date.now() - 1000, at: Date.now() } });
+  await popup.waitForTimeout(300);
+  rateLine = await readRateLine();
+  check("L popup: an expired window hides the line", rateLine === null, rateLine);
+
   const failed = results.filter((x) => !x.ok).length;
   console.log(`\n${results.length - failed}/${results.length} passed`);
   process.exitCode = failed ? 1 : 0;
