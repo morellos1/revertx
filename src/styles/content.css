@@ -1,5 +1,5 @@
-/* revertX content styles: the Masonry and Mosaic views (mosaic.ts).
-   Everything else styles itself inline or through X's own nodes. */
+/* revertX content styles: the Mosaic view (mosaic.ts). Everything else
+   styles itself inline or through X's own nodes. */
 
 /* --- the grid overlay ----------------------------------------------------- */
 /* An opaque overlay over X's own media view. The view underneath is NOT
@@ -142,10 +142,10 @@ html.xtag-gridmode:not(.xtag-grid-borrowing)
 }
 
 /* The loading tail: shimmer skeletons while more can still arrive. They
-   are trailing CHILDREN of .xtag-grid-tiles, laid out by the same masonry
-   pass, so they continue the columns instead of starting a detached block.
-   Hidden whole when the account is exhausted (the loading class comes
-   off; layoutMosaic then skips them, so they hold no column height). */
+   are trailing CHILDREN of .xtag-grid-tiles, laid out by the same
+   layout pass, so they continue the rows instead of starting a detached
+   block. Hidden whole when the account is exhausted (the loading class
+   comes off; layoutMosaic then skips them, so they hold no height). */
 .xtag-skel {
   display: none;
   position: absolute;

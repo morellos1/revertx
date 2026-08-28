@@ -11,16 +11,16 @@ for (const key of KEYS) {
   });
 }
 
-// The Media default is a 4-way choice (photos | masonry | mosaic |
-// videos), one stored `mediaview` string shared with the dropdown picks
-// on the page. The loading note shows while either revertX view is the
-// pick; the other two views are X's own and load nothing. The note is
-// the one place the cost is said up front: a second line on the
-// injected menu items overflows X's panel.
+// The Media default is a 3-way choice (photos | mosaic | videos), one
+// stored `mediaview` string shared with the dropdown picks on the page.
+// The loading note shows while Mosaic is the pick; the other two views
+// are X's own and load nothing. The note is the one place the cost is
+// said up front: a second line on the injected menu item overflows X's
+// panel.
 const view = $<HTMLSelectElement>("mediaview");
 
 function syncMosaicNote(): void {
-  $("mosaic-note").hidden = view.value !== "masonry" && view.value !== "mosaic";
+  $("mosaic-note").hidden = view.value !== "mosaic";
 }
 
 view.addEventListener("change", () => {

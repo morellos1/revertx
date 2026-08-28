@@ -28,7 +28,7 @@ worth a next version, not a rescue.
 | 1.x | A userland grid and a framed Likes pane, no longer shipped. |
 | 2.0.0 | Submitted 2026-08-21, superseded before publication. |
 | 2.0.1 | X's own layouts. The first 2.x the store publishes. |
-| 2.1.0 | Adds the Masonry and Mosaic views. Everything under "The Masonry and Mosaic views" below applies from this version. |
+| 2.1.0 | Adds the Mosaic view. Everything under "The Mosaic view" below applies from this version. |
 
 ## Listing
 
@@ -62,13 +62,12 @@ worth a next version, not a rescue.
 > Copy link first in the share menu. X put "Send via Chat" on top. This puts
 > "Copy link" back where it was.
 >
-> Masonry and Mosaic, two extra Media tab views. Off unless you pick one
-> from the tab's own dropdown. Both show the same photos at their real
-> shapes instead of square crops: Masonry in columns, Mosaic in rows
-> that fill the width. They load more photos as you scroll, the way the
-> page itself does. X limits how much an account can load at once, so
-> they stop loading early and say when loading continues; the popup
-> notes this where you pick them.
+> Mosaic, an extra Media tab view. Off unless you pick it from the
+> tab's own dropdown. It shows the same photos at their real shapes
+> instead of square crops, in rows that fill the width. It loads more
+> photos as you scroll, the way the page itself does. X limits how much
+> an account can load at once, so it stops loading early and says when
+> loading continues; the popup notes this where you pick it.
 >
 > revertX collects nothing, sends nothing, and has no analytics. It runs no
 > background process, asks for one permission (storage, for your switches),
@@ -85,23 +84,21 @@ are: the four restores are still the point.
 > revertX modifies the interface of x.com to restore layouts and tabs the
 > site removed (the Media tab's photo grid, the profile Likes tab, the
 > photo grid inside posts) and one navigation convenience in the share
-> menu. It also offers two alternative layouts for the same media the tab
-> already shows, variable-height views in place of the square grid.
+> menu. It also offers one alternative layout for the same media the tab
+> already shows, a variable-height view in place of the square grid.
 
 Both halves are the same purpose: how one site's own content is laid out.
-The two views add no new surface, no new site and no new data.
+The view adds no new surface, no new site and no new data.
 
-## The Masonry and Mosaic views (from 2.1.0)
+## The Mosaic view (from 2.1.0)
 
-The views are the first feature that makes a request, so they are the
-first thing a reviewer will stop on. Answer plainly.
+The view is the first feature that makes a request, so it is the first
+thing a reviewer will stop on. Answer plainly.
 
-**What they are.** Two optional choices in the Media tab's dropdown,
-beside Videos and Photos, off unless the user picks one. Both draw the
-same photos the tab already shows, at their own aspect ratios instead of
-a square crop: Masonry places each photo in a column, Mosaic fits them
-into rows that fill the width. They differ only in that layout pass;
-everything below is true of both.
+**What it is.** One optional choice in the Media tab's dropdown, beside
+Videos and Photos, off unless the user picks it. It draws the same
+photos the tab already shows, at their own aspect ratios instead of a
+square crop, fitted into rows that fill the width.
 
 **Where the photos come from.** Two sources, in this order:
 
@@ -124,8 +121,7 @@ and the request carries the reader's session, so neither the address nor
 the image host may be taken on trust.
 
 **Rate limiting.** X's photo-timeline budget is 50 requests per 15 minutes
-per account, shared with x.com's own timelines. Both views share one
-loader, so the cost is the same whichever is picked. The extension reads the
+per account, shared with x.com's own timelines. The extension reads the
 `x-rate-limit-remaining` header on every response and stops requesting
 while 8 remain, telling the user when loading resumes, so the site's own
 feeds keep the rest. If x.com answers 429 anyway, it stops requesting
@@ -145,7 +141,7 @@ third party; there is no server to reach.
 
 | Field | Justification |
 | --- | --- |
-| `storage` | Two things, both local: the user's preference for each feature (the Media tab's is a choice of four views), and a note of which of X's own feature flags the last page load found, so the popup can tell the user when X has removed a layout. No browsing history, no account data. |
+| `storage` | Two things, both local: the user's preference for each feature (the Media tab's is a choice of three views), and a note of which of X's own feature flags the last page load found, so the popup can tell the user when X has removed a layout. No browsing history, no account data. |
 | Host access | None requested. The content scripts are declared for `https://x.com/*` only. |
 | Remote code | None. No script is fetched or evaluated at runtime. |
 
@@ -182,7 +178,7 @@ collected; if asked, point at the Privacy section of the README.
 | `02-likes-tab.png` | Likes tab back on your own profile |
 | `03-post-grid.png` | Posts with 2, 3 or 4 images back in the old grid |
 | `04-share-menu.png` | Copy link back on top |
-| `05-masonry-mosaic.png` | Masonry and Mosaic show every photo at its own shape |
+| `05-mosaic.png` | Mosaic shows every photo at its own shape |
 
 Captions are rendered into the image; the store has no caption field.
 Each one is a caption column beside a page-only capture of live x.com

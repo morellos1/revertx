@@ -1,5 +1,5 @@
-// The Masonry and Mosaic views: two optional Media-tab layouts that show
-// every photo at its own aspect ratio instead of X's square crop.
+// The Mosaic view: an optional Media-tab layout that shows every photo
+// at its own aspect ratio instead of X's square crop.
 //
 // An opaque overlay draws the tiles over X's own media view, fed two
 // ways. The MAIN-world interceptor hands over every photos-timeline
@@ -13,14 +13,12 @@
 // The grid rides ONE timeline: photos. X partitions media server-side,
 // so a mixed photo+video grid has no single source. Videos keep X's view.
 //
-// X's media dropdown gets a third and a fourth option: Videos / Photos /
-// Masonry / Mosaic (items cloned from X's own, so they wear X's own menu
-// styling). The two modes share every mechanism here and differ only in
-// the layout pass (layoutColumns vs layoutWideRows). A pick persists:
-// the dropdown items and the popup's "Media tab opens" select write the
-// same `mediaview` choice, so whatever was picked last is what the
-// Media tab opens next time. Escape is the one per-visit override, and
-// it writes nothing.
+// X's media dropdown gets a third option: Videos / Photos / Mosaic (the
+// item is a clone of one of X's own, so it wears X's own menu styling).
+// A pick persists: the dropdown item and the popup's "Media tab opens"
+// select write the same `mediaview` choice, so whatever was picked last
+// is what the Media tab opens next time. Escape is the one per-visit
+// override, and it writes nothing.
 import { pollFor } from "../core/poll";
 import { readMediaView, settingsReady, watchChoice } from "../core/settings";
 import { subscribeToMutations } from "./observer";
@@ -135,32 +133,16 @@ const PREFILL_BEARER = "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRC"
   + "OuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 
 // The Media-tab default, shared with the popup's select: "photos" (X's
-// native grid), "masonry", "mosaic", or "videos". Dropdown picks
-// persist into the same key, so the dropdown IS the control.
+// native grid), "mosaic", or "videos". Dropdown picks persist into the
+// same key, so the dropdown IS the control.
 const mediaView = watchChoice("mediaview", readMediaView);
 
-// The two grid flavors; everything but the layout pass is shared.
-// "masonry" is the shortest-column view, "mosaic" the justified rows.
-type GridMode = "masonry" | "mosaic";
-
-function isGridView(v: string): v is GridMode {
-  return v === "masonry" || v === "mosaic";
-}
-
 // The per-visit override. "feed" means "X's own view for now, whatever
-// the default" (Escape writes it, and it alone persists nothing); a
-// mode value bridges the beat between a dropdown pick and the storage
+// the default" (Escape writes it, and it alone persists nothing);
+// "mosaic" bridges the beat between a dropdown pick and the storage
 // cache echoing it back. evaluate() clears it when the reader leaves the
 // media surface, so every fresh visit starts from the stored default.
-let override: GridMode | "feed" | null = null;
-
-// Which grid flavor is (or would be) on screen. The override outranks
-// the stored default for the visit, exactly as it does for shouldGrid.
-function gridMode(): GridMode {
-  if (override !== null && override !== "feed") return override;
-  const stored = mediaView();
-  return isGridView(stored) ? stored : "masonry";
-}
+let override: "mosaic" | "feed" | null = null;
 // Whether the grid overlay is up RIGHT NOW. Any logic keyed on "the
 // reader scrolled down" must ask, because the driver walks the WINDOW
 // scroll behind the overlay. OUTSIDE this extension the contract is the
@@ -194,8 +176,8 @@ interface Tile {
   src: string;
   video: boolean;
   // height/width of the ORIGINAL image, from the payload's original_info.
-  // The masonry lays out from this before any thumbnail loads, which is
-  // what keeps the no-shift rule. Undefined means the tile came from the
+  // The layout reads this before any thumbnail loads, which is what
+  // keeps the no-shift rule. Undefined means the tile came from the
   // harvest with no payload seen yet; the thumb's own load event teaches
   // the ratio then (name=small preserves aspect), one relayout per lesson.
   ratio?: number;
@@ -223,7 +205,7 @@ function shouldGrid(): boolean {
   // more" forever.
   if (!onPhotosFeed()) return false;
   if (override === "feed") return false;
-  return override !== null || isGridView(mediaView());
+  return override !== null || mediaView() === "mosaic";
 }
 
 function selectedMediaTab(): HTMLAnchorElement | null {
@@ -239,24 +221,12 @@ function selectedMediaTab(): HTMLAnchorElement | null {
 // --- the tab wears the grid's name -----------------------------------------
 // While the grid is active X's Media tab would say "Photos": the
 // underlying view's name, not the one on screen. The tab's first text
-// node is renamed to the flavor's name and re-asserted every mutation
-// batch (React re-renders restore X's label), with the ORIGINAL label
-// kept: the menu logic below identifies the current-feed item by
-// comparing item text against the tab's label, and that comparison must
-// keep using X's own locale word, never our rename.
-// One label per flavor: the tab names the view on screen, and a live
-// flavor switch renames it in place.
-const GRID_TAB_LABELS: Record<GridMode, string> = {
-  masonry: "Masonry", mosaic: "Mosaic",
-};
-
-function gridTabLabel(): string {
-  return GRID_TAB_LABELS[gridMode()];
-}
-
-function isGridTabLabel(text: string): boolean {
-  return text === GRID_TAB_LABELS.masonry || text === GRID_TAB_LABELS.mosaic;
-}
+// node is renamed to "Mosaic" and re-asserted every mutation batch
+// (React re-renders restore X's label), with the ORIGINAL label kept:
+// the menu logic below identifies the current-feed item by comparing
+// item text against the tab's label, and that comparison must keep
+// using X's own locale word, never our rename.
+const GRID_TAB_LABEL = "Mosaic";
 
 let tabLabelWas: string | null = null;
 
@@ -267,7 +237,7 @@ function tabTextOf(tab: HTMLElement): string {
 // The tab's label as X wrote it (locale word), whether or not we renamed it.
 function tabOriginalLabel(tab: HTMLElement): string {
   const text = tabTextOf(tab);
-  return isGridTabLabel(text) && tabLabelWas ? tabLabelWas : text;
+  return text === GRID_TAB_LABEL && tabLabelWas ? tabLabelWas : text;
 }
 
 // Every media-path tab in the tablist, selected or not: the RESTORE half
@@ -307,19 +277,17 @@ function assertTabLabel(): void {
     if (!claimed) return;
     const tab = selectedMediaTab();
     if (!tab) return;
-    const wanted = gridTabLabel();
     setFirstTextNode(tab, (text) => {
-      if (text === wanted) return null;
-      // Only X's own word may become the restore label; a stale flavor
-      // label of ours (a live Masonry/Mosaic switch) must not.
-      if (!isGridTabLabel(text)) tabLabelWas = text;
-      return wanted;
+      if (text === GRID_TAB_LABEL) return null;
+      // Anything else is X's own locale word; keep it for the restore.
+      tabLabelWas = text;
+      return GRID_TAB_LABEL;
     });
     return;
   }
   for (const tab of allMediaTabs()) {
     setFirstTextNode(tab, (text) =>
-      isGridTabLabel(text) && tabLabelWas ? tabLabelWas : null);
+      text === GRID_TAB_LABEL && tabLabelWas ? tabLabelWas : null);
   }
 }
 
@@ -464,8 +432,8 @@ function placeOverlay(): void {
   }
   overlay.style.left = `${rect.left}px`;
   overlay.style.width = `${rect.width}px`;
-  // The column's width is the masonry's one layout input besides the
-  // ratios; re-lay-out when it actually changed (resize, sidebar flex).
+  // The column's width is the layout's one input besides the ratios;
+  // re-lay-out when it actually changed (resize, sidebar flex).
   if (gridEl && Math.abs(gridEl.clientWidth - lastLayoutWidth) > 1) scheduleLayout();
   assertSpacer();
   sizeSpacer(false);
@@ -644,59 +612,43 @@ function isLightTheme(): boolean {
   return (r * 299 + g * 587 + b * 114) / 1000 > 128;
 }
 
-// --- the masonry layout -----------------------------------------------------
-// Native CSS masonry is still behind flags in every browser this runs
-// in, and CSS columns order tiles column-major (top to bottom, then the
-// next column), which scrambles a timeline; so the layout is ~50 lines
-// of JS: walk the grid's children IN DOM ORDER (mergeRun keeps that
-// order correct) and drop each tile into the SHORTEST column. That
-// keeps rough feed order row-wise, appends page after page without ever
-// moving a placed tile, and needs nothing but each tile's aspect ratio,
-// which the payloads carry as original_info.width/height before any
-// image loads (the no-shift rule).
+// --- the layout ------------------------------------------------------------
+// The layout is plain JS: walk the grid's children IN DOM ORDER
+// (mergeRun keeps that order correct) and flow them into justified rows
+// (layoutWideRows). It appends page after page without ever moving a
+// placed tile, and needs nothing but each tile's aspect ratio, which
+// the payloads carry as original_info.width/height before any image
+// loads (the no-shift rule).
 //
 // Tiles are position:absolute inside .xtag-grid-tiles; the pass writes
 // left/top/width/height inline and gives the container its explicit
 // height. offsetTop therefore keeps meaning for the driver's content-edge
 // math, and stashGrid's DOM-order walk is untouched.
+//
+// COL_TARGET_PX sizes nothing directly any more; it derives the column
+// width a plain grid of this width would have, which is what the row
+// height aims near (ROW_TARGET_FACTOR).
 const COL_TARGET_PX = 185;
 const COL_GAP_PX = 4;
-// Aspect clamp: one 10:1 screenshot must not jam a column, one panorama
-// must not vanish into a sliver. Outside the band the tile crops
-// (object-fit: cover); the viewer has the full image one click away.
+// Aspect clamp: one 10:1 screenshot must not tower over its row, one
+// panorama must not vanish into a sliver. Outside the band the tile
+// crops (object-fit: cover); the viewer has the full image one click
+// away.
 const RATIO_MIN = 0.5;
 const RATIO_MAX = 2.5;
-// Landscape tiles: a one-column cell scales a wide photo down by its own
-// ratio, so at 185px wide a 16:9 frame stands ~104px tall; the widest
-// art in the feed renders smallest. A two-column pair span is NOT the
-// fix and must not come back: the pair pick keeps re-choosing the same
-// low pair, so spanning tiles herd left while singles drain right, and
-// every pair placement whose columns disagree leaves a hole over the
-// shorter one.
-//
-// So the choice is the reader's, as two modes:
-//   MASONRY  every tile one column; the plain shortest-column masonry.
-//   MOSAIC   anything wider than 4:3 usually takes the ENTIRE ROW at
-//            the grid's full width, and everything else flows into
-//            JUSTIFIED rows (see layoutWideRows for when a wide tile
-//            joins a row instead).
-// 4:3 itself stays a single cell in both modes: at ~139px tall it never
-// reads as tiny, and full-rowing it would turn a plain-photos profile
-// into a one-across feed.
+// Anything wider than 4:3 usually takes the entire row at the grid's
+// full width (see layoutWideRows for when it joins a row instead). 4:3
+// itself stays an ordinary row member: full-rowing it would turn a
+// plain-photos profile into a one-across feed.
 const SPAN_RATIO_MAX = 0.75;
-// The mosaic's row shape. Rows aim near the masonry's column width
-// scaled up a touch, so the two modes read as siblings; the cap bounds
-// the one stretch case (a partial row force-closed with a single tile
-// in it), where a lone square would otherwise become a grid-width
-// monolith taller than it is wide.
+// The row shape. Rows aim near the derived column width scaled up a
+// touch; the cap bounds the one stretch case (a partial row
+// force-closed with a single tile in it), where a lone square would
+// otherwise become a grid-width monolith taller than it is wide.
 const ROW_TARGET_FACTOR = 1.15;
 const ROW_MAX_FRACTION = 0.7;
 let layoutTimer = 0;
 let lastLayoutWidth = 0;
-// The flavor the last layout pass used: a dropdown or popup switch
-// between the two mosaic modes re-lays-out IN PLACE (evaluate compares
-// against this); the tiles, the driver and the cache all carry over.
-let laidOutMode: GridMode | null = null;
 
 function tileRatio(el: HTMLElement): number {
   const r = Number(el.dataset.xtagRatio);
@@ -745,46 +697,13 @@ function layoutMosaic(): void {
   const loading = overlay.classList.contains("xtag-grid-loading");
   const children = (Array.from(gridEl.children) as HTMLElement[])
     .filter((child) => loading || !child.classList.contains("xtag-skel"));
-  const justified = gridMode() === "mosaic";
-  laidOutMode = justified ? "mosaic" : "masonry";
-  const bottom = justified
-    ? layoutWideRows(children, width, colW, loading)
-    : layoutColumns(children, cols, colW);
-  gridEl.style.height = `${Math.ceil(bottom)}px`;
+  gridEl.style.height =
+    `${Math.ceil(layoutWideRows(children, width, colW, loading))}px`;
 }
 
-// The plain mosaic: shortest-column masonry, one column per tile.
-function layoutColumns(children: HTMLElement[], cols: number,
-                       colW: number): number {
-  const tops = new Array<number>(cols).fill(0);
-  let maxBottom = 0;
-  for (const child of children) {
-    const h = Math.round(colW * tileRatio(child));
-    // The SHORTEST column, ties to the leftmost: that is what keeps a run
-    // of tiles reading left-to-right when the columns are level.
-    let col = 0;
-    for (let i = 1; i < cols; i++) {
-      if (tops[i] < tops[col] - 0.5) col = i;
-    }
-    child.style.width = `${colW.toFixed(2)}px`;
-    child.style.height = `${h}px`;
-    child.style.left = `${((colW + COL_GAP_PX) * col).toFixed(2)}px`;
-    child.style.top = `${tops[col].toFixed(2)}px`;
-    assertThumbScale(child, colW);
-    tops[col] += h + COL_GAP_PX;
-    // The container's height is the last tile's bottom, not the next
-    // top: a trailing gap would pad the scroll range for nothing.
-    maxBottom = Math.max(maxBottom, tops[col] - COL_GAP_PX);
-  }
-  return maxBottom;
-}
-
-// The mosaic (justified rows). Keeping masonry columns and full-rowing
-// only the landscapes leaves pockets: between two full rows the singles
-// fill columns left to right, so a band with fewer singles than columns
-// leaves its spare columns empty. With the order fixed and the column
-// widths fixed, some band always comes up short; the only degree of
-// freedom left is the widths. So the wide mode is JUSTIFIED ROWS: tiles
+// Justified rows. Fixed-width columns cannot fill every band: with the
+// order fixed and the widths fixed, some band always comes up short, so
+// the widths are the one degree of freedom that closes every gap. Tiles
 // flow into rows in feed order, and every closed row is scaled to one
 // shared height at which the widths, kept proportional to each tile's
 // aspect, fill the grid exactly. An ordinary row therefore crops
@@ -809,7 +728,7 @@ function layoutColumns(children: HTMLElement[], cols: number,
 //
 // Row closure depends only on the tiles BEFORE the closing point, so an
 // appended page can never re-shape a closed row; the no-shift rule
-// holds exactly as it does for the masonry.
+// holds.
 function layoutWideRows(children: HTMLElement[], width: number,
                         colW: number, loading: boolean): number {
   const target = colW * ROW_TARGET_FACTOR;
@@ -917,7 +836,7 @@ function buildOverlay(): void {
   }
   // No switcher strip of our own: the grid is page content; scroll up to
   // the real tab bar and use X's own dropdown, which carries the
-  // injected items.
+  // injected Mosaic item.
   overlay.append(gridEl, statusEl);
   overlay.classList.add("xtag-grid-loading");
   // While a dropdown is open through the clip-path hole (see punchHole), a
@@ -1355,7 +1274,7 @@ function makeTileEl(tile: Tile): HTMLAnchorElement {
   // order it can SEE by walking these children, and the skeleton tiles,
   // which carry no id, drop out of that walk for free.
   a.dataset.xtagId = tile.href.toLowerCase();
-  // The masonry's input, on the element the layout pass walks. A tile
+  // The layout's input, on the element the layout pass walks. A tile
   // without one lays out square until its thumbnail teaches the truth.
   if (tile.ratio !== undefined) a.dataset.xtagRatio = String(tile.ratio);
   const img = document.createElement("img");
@@ -1955,7 +1874,7 @@ function mediaEntityOf(
     let href = new URL(exp).pathname;
     if (index !== null) href = href.replace(/\/photo\/\d+$/, `/photo/${index}`);
     // original_info rides every media entity beside media_url_https and
-    // carries the ORIGINAL dimensions; the masonry's ratio, known
+    // carries the ORIGINAL dimensions; the layout's ratio, known
     // before any thumbnail loads. Absent or malformed, the tile lays
     // out square and the thumb's load event teaches the truth.
     let ratio: number | undefined;
@@ -2329,7 +2248,7 @@ async function driveLoop(): Promise<void> {
     // The skeleton tail shows whenever more tiles can still arrive; not
     // while resting for the rate limit (the pause branch below owns the
     // status line for that state). Flipping it moves the skeletons in or
-    // out of the masonry, so a real flip re-lays-out.
+    // out of the grid, so a real flip re-lays-out.
     const loadingNow = !exhausted && !ratePauseUntil();
     if (overlay!.classList.contains("xtag-grid-loading") !== loadingNow) {
       overlay!.classList.toggle("xtag-grid-loading", loadingNow);
@@ -2594,7 +2513,6 @@ function deactivate(restoreScroll = true): void {
   window.clearTimeout(layoutTimer);
   layoutTimer = 0;
   lastLayoutWidth = 0;
-  laidOutMode = null;
   // The next activation builds a fresh overlay with no clip on it; a stale
   // path here would make setHole skip the first write to that new element.
   holePath = "";
@@ -2625,15 +2543,6 @@ function evaluate(): void {
       // total; returnWindow's rule, for the same reason.
       lastMaxInner = -1;
     }
-    // A flavor switch on a live grid (dropdown pick or popup select):
-    // same tiles, new layout, one relayout; and the tab is renamed NOW,
-    // because a style-only relayout fires no childList mutation for the
-    // per-batch assert to ride. The spacer follows on its own clock,
-    // from the changed grid height.
-    if (active && laidOutMode !== null && laidOutMode !== gridMode()) {
-      scheduleLayout();
-      assertTabLabel();
-    }
   } else {
     deactivate(active);
     // The override is per-visit: anywhere that is neither the media view
@@ -2643,13 +2552,13 @@ function evaluate(): void {
   }
 }
 
-// --- the injected dropdown items -------------------------------------------
+// --- the injected dropdown item --------------------------------------------
 // X's media menu has two items (Videos / Photos, no testids, words follow
 // the UI language). The media menu is recognized structurally: exactly two
 // real items, one of which repeats the selected media tab's own label.
-// Each injected item is a CLONE of the item that is not the current
-// choice (the one without the ✓), so it wears X's own menu styling
-// whatever the theme.
+// The injected Mosaic item is a CLONE of the item that is not the
+// current choice (the one without the ✓), so it wears X's own menu
+// styling whatever the theme.
 
 function realMenuItems(menu: HTMLElement): HTMLElement[] {
   return Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]'))
@@ -2680,18 +2589,10 @@ function setItemText(item: HTMLElement, text: string): void {
   }
 }
 
-// No per-item rate note: a second line on the injected items makes four
-// two-line rows overflow the panel X sizes for its own two, and the
-// bottom item clips. The cost note lives in the popup beside the
-// select, and the status line says so the moment the floor bites.
-
-// One menu item per grid flavor. The attribute VALUE is the mode, so
-// the click handler and the ✓ assert read the item itself; hasAttribute
-// callers (realMenuItems, openTile's filters) never care about the value.
-const GRID_MENU_ITEMS: { mode: GridMode; label: string }[] = [
-  { mode: "masonry", label: "Masonry" },
-  { mode: "mosaic", label: "Mosaic" },
-];
+// No rate note on the injected item: a second line makes the row
+// overflow the panel X sizes for its own items. The cost note lives in
+// the popup beside the select, and the status line says so the moment
+// the floor bites.
 
 function injectGridItem(menu: HTMLElement): void {
   if (menu.querySelector(`[${GRID_ITEM_ATTR}]`)) return;
@@ -2701,24 +2602,19 @@ function injectGridItem(menu: HTMLElement): void {
   const items = realMenuItems(menu);
   // Clone the item WITH the checkmark when one is on screen: the copy
   // then carries X's own ✓ (the blue svg, at X's size and place), and
-  // assertMenuChecks shows it on the chosen flavor and hides it on the
-  // other. A text-glyph "✓" reads as foreign beside X's. Visibility
-  // keeps the svg's layout slot, exactly how the real items' ✓ is
-  // handled one function down. The pair goes AFTER X's last item, and
-  // assertMenuChecks re-glues it there every batch (see the rewrap
-  // comment there).
+  // assertMenuChecks shows it while the grid is up. A text-glyph "✓"
+  // reads as foreign beside X's. Visibility keeps the svg's layout
+  // slot, exactly how the real items' ✓ is handled one function down.
+  // The item goes AFTER X's last item, and assertMenuChecks re-glues it
+  // there every batch (see the rewrap comment there).
   const donor = items.find((item) => item.querySelector("svg"))
     ?? items.find((item) => (item.textContent ?? "").trim() !== tabText)
     ?? items[1];
-  let after: HTMLElement = items[items.length - 1];
-  for (const { mode, label } of GRID_MENU_ITEMS) {
-    const clone = donor.cloneNode(true) as HTMLElement;
-    clone.setAttribute(GRID_ITEM_ATTR, mode);
-    setItemText(clone, label);
-    clone.style.cursor = "pointer";
-    after.insertAdjacentElement("afterend", clone);
-    after = clone;
-  }
+  const clone = donor.cloneNode(true) as HTMLElement;
+  clone.setAttribute(GRID_ITEM_ATTR, "");
+  setItemText(clone, GRID_TAB_LABEL);
+  clone.style.cursor = "pointer";
+  items[items.length - 1].insertAdjacentElement("afterend", clone);
   assertMenuChecks();
 }
 
@@ -2732,58 +2628,41 @@ function injectGridItem(menu: HTMLElement): void {
 function assertMenuChecks(): void {
   const menu = document.querySelector<HTMLElement>('[role="menu"]');
   if (!menu) return;
-  const clones = Array.from(
-    menu.querySelectorAll<HTMLElement>(`[${GRID_ITEM_ATTR}]`));
-  if (clones.length === 0) return;
-  // Each clone's label follows `active` and the mode, re-asserted per
-  // batch, never written once at inject time: a menu can outlive an
-  // activation change (picking Mosaic activates under the still-open
-  // menu), which would leave a live grid behind an item with no ✓,
-  // beside X's ✓s this very function had hidden. The ✓ sits on the
-  // flavor the grid is actually showing; picking the other flavor
-  // moves it.
-  for (const clone of clones) {
-    const entry = GRID_MENU_ITEMS.find(
-      (m) => m.mode === clone.getAttribute(GRID_ITEM_ATTR));
-    if (!entry) continue;
-    const chosen = active && gridMode() === entry.mode;
-    const check = clone.querySelector("svg");
-    if (check) {
-      // X's own glyph, shown only on the chosen flavor; write-on-change,
-      // this runs per frame while a menu is open.
-      const want = chosen ? "visible" : "hidden";
-      if (check.style.visibility !== want) check.style.visibility = want;
-      setItemText(clone, entry.label);
-    } else {
-      // No ✓ was on screen to clone from; the text glyph is the fallback.
-      setItemText(clone, chosen ? `${entry.label} ✓` : entry.label);
-    }
+  const clone = menu.querySelector<HTMLElement>(`[${GRID_ITEM_ATTR}]`);
+  if (!clone) return;
+  // The clone's label and ✓ follow `active`, re-asserted per batch,
+  // never written once at inject time: a menu can outlive an activation
+  // change (picking Mosaic activates under the still-open menu), which
+  // would leave a live grid behind an item with no ✓, beside X's ✓s
+  // this very function had hidden.
+  const check = clone.querySelector("svg");
+  if (check) {
+    // X's own glyph, shown while the grid is up; write-on-change, this
+    // runs per frame while a menu is open.
+    const want = active ? "visible" : "hidden";
+    if (check.style.visibility !== want) check.style.visibility = want;
+    setItemText(clone, GRID_TAB_LABEL);
+  } else {
+    // No ✓ was on screen to clone from; the text glyph is the fallback.
+    setItemText(clone, active ? `${GRID_TAB_LABEL} ✓` : GRID_TAB_LABEL);
   }
-  // The clones stay GLUED to X's own items; unglued they show a seam of
-  // bare panel between the injected items. Shortly after the menu
-  // mounts, React re-renders it and REWRAPS its two items into a fresh
-  // container (measured live: the menu becomes [wrapper > Videos,
-  // Photos]); nodes it does not own are left OUTSIDE that wrapper,
-  // wherever reconciliation dropped them, beside whatever helper nodes
-  // X renders. Anchored to the last real item, inside the same parent,
-  // the pair sits flush in X's own flow (measured: four contiguous
-  // 44px rows, the menu's auto height following, stable across
-  // re-renders) and every stray X node lands outside it. Write-on-move:
-  // a node is touched only when it is not already in place.
+  // The clone stays GLUED to X's own items; unglued it shows a seam of
+  // bare panel. Shortly after the menu mounts, React re-renders it and
+  // REWRAPS its two items into a fresh container (measured live: the
+  // menu becomes [wrapper > Videos, Photos]); nodes it does not own are
+  // left OUTSIDE that wrapper, wherever reconciliation dropped them,
+  // beside whatever helper nodes X renders. Anchored to the last real
+  // item, inside the same parent, the clone sits flush in X's own flow
+  // (measured: contiguous 44px rows, the menu's auto height following,
+  // stable across re-renders) and every stray X node lands outside it.
+  // Write-on-move: the node is touched only when it is not already in
+  // place.
   const real = realMenuItems(menu);
   const lastReal = real[real.length - 1];
-  if (lastReal?.parentElement) {
-    let anchor: HTMLElement = lastReal;
-    for (const entry of GRID_MENU_ITEMS) {
-      const clone = clones.find(
-        (c) => c.getAttribute(GRID_ITEM_ATTR) === entry.mode);
-      if (!clone) continue;
-      if (clone.parentElement !== anchor.parentElement
-        || clone.previousElementSibling !== anchor) {
-        anchor.insertAdjacentElement("afterend", clone);
-      }
-      anchor = clone;
-    }
+  if (lastReal?.parentElement
+    && (clone.parentElement !== lastReal.parentElement
+      || clone.previousElementSibling !== lastReal)) {
+    lastReal.insertAdjacentElement("afterend", clone);
   }
   if (!active) return;
   const tab = selectedMediaTab();
@@ -2850,11 +2729,9 @@ function onMenuClick(event: MouseEvent): void {
     event.stopPropagation();
     // The override answers NOW; the write makes it the default (the
     // storage echo lands a beat later and changes nothing the override
-    // has not already said). The item's attribute value IS the mode.
-    const picked = item.getAttribute(GRID_ITEM_ATTR) ?? "";
-    const mode: GridMode = isGridView(picked) ? picked : "masonry";
-    override = mode;
-    void chrome.storage.local.set({ mediaview: mode });
+    // has not already said).
+    override = "mosaic";
+    void chrome.storage.local.set({ mediaview: "mosaic" });
     if (onPhotosFeed()) {
       closeMenu();
       evaluate();
@@ -3010,7 +2887,7 @@ export function initMosaic(): void {
     // ResizeObserver in watchColumn covers the size changes; this
     // covers node swaps).
     if (active) placeOverlay();
-    // The tab wears the flavor's name while the grid is the view on
+    // The tab wears the grid's name while the grid is the view on
     // screen, X's ✓ stays off the Photos item (React re-renders restore
     // both, so re-assert per batch), and an open menu gets its
     // clip-path hole (see punchHole).

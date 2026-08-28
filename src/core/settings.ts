@@ -55,15 +55,16 @@ chrome.storage.onChanged.addListener((changes) => {
 });
 
 // The Media-tab default. One value, three generations of keys: 2.1
-// writes `mediaview` ("photos" | "masonry" | "mosaic" | "videos").
-// 2.0 wrote the `mediagrid` boolean; 1.x wrote `mediaview`
-// ("grid" | "photos" | "videos") and before that a `mediaphotos`
-// boolean. Anything that meant videos still means videos, and 1.x's
-// "grid" maps to the native photo grid.
+// writes `mediaview` ("photos" | "mosaic" | "videos"). 2.0 wrote the
+// `mediagrid` boolean; 1.x wrote `mediaview` ("grid" | "photos" |
+// "videos") and before that a `mediaphotos` boolean. Anything that
+// meant videos still means videos, and 1.x's "grid" maps to the native
+// photo grid. "masonry" existed only in unreleased builds; it maps to
+// the surviving view.
 export function readMediaView(stored: Record<string, unknown>): string {
   const v = stored["mediaview"];
-  if (v === "photos" || v === "masonry" || v === "mosaic"
-    || v === "videos") return v;
+  if (v === "photos" || v === "mosaic" || v === "videos") return v;
+  if (v === "masonry") return "mosaic";
   if (v === "grid") return "photos";
   if (typeof stored["mediagrid"] === "boolean") {
     return stored["mediagrid"] ? "photos" : "videos";
