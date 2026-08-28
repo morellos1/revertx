@@ -1701,6 +1701,7 @@ function noteRateHeaders(remaining: string | null, reset: string | null,
 function noteRate429(): void {
   apiCooldownUntil = Math.max(apiCooldownUntil, Date.now() + API_COOLDOWN_MS);
   rateRemaining = 0;
+  last429At = Date.now();
   // A headerless 429 still pauses: a 15-min window is X's standard.
   if (rateResetAt < Date.now()) rateResetAt = Date.now() + 15 * 60_000;
 }
@@ -1749,6 +1750,56 @@ function fmtTime(at: number): string {
 // "1 photo", never "1 photos".
 function nphotos(n: number): string {
   return n === 1 ? "1 photo" : `${n} photos`;
+}
+
+// The grid's status line: the count, and the pause whenever X's limit
+// has bitten. Said in EVERY non-exhausted state, docked or not: a
+// reader at the top of an empty rate-limited grid must see why it is
+// empty, never a bare "0 photos".
+function statusLine(): string {
+  const pausedUntil = ratePauseUntil();
+  return pausedUntil
+    ? `${nphotos(tiles.size)} · X's loading limit · loading resumes `
+      + fmtTime(pausedUntil)
+    : nphotos(tiles.size);
+}
+
+// --- the native-view rate notice -------------------------------------------
+// The bucket is shared with X's OWN photos view, so when it empties,
+// that view fails too ("Something went wrong. Try reloading.") and the
+// reader has no idea why or for how long. While a photos-timeline 429
+// is fresh and the window has not reset, a one-line note under the
+// profile's tab strip says when photos return. Native view only: the
+// grid's own status line says the same while the overlay is up.
+// Re-asserted per mutation batch (the note's home is React's, and a
+// re-render drops it) and removed the moment the condition clears.
+const RATE_NOTE_ID = "xtag-rate-note";
+const RATE_429_FRESH_MS = 16 * 60_000;
+let last429At = 0;
+
+function assertRateNotice(): void {
+  const existing = document.getElementById(RATE_NOTE_ID);
+  const wanted = !active && onPhotosFeed()
+    && Date.now() - last429At < RATE_429_FRESH_MS
+    && Date.now() < rateResetAt;
+  if (!wanted) {
+    existing?.remove();
+    return;
+  }
+  const text = "X's loading limit is used up · photos return at "
+    + fmtTime(rateResetAt);
+  if (existing) {
+    if (existing.textContent !== text) existing.textContent = text;
+    return;
+  }
+  const strip = document.querySelector('main [role="tablist"]');
+  if (!strip) return;
+  const note = document.createElement("div");
+  note.id = RATE_NOTE_ID;
+  note.textContent = text;
+  note.title = "X limits how much an account can load in 15 minutes, "
+    + "shared with normal browsing. This note is from revertX.";
+  strip.insertAdjacentElement("afterend", note);
 }
 
 // The cursor a request ASKED with, read back out of its own URL; the
@@ -2246,9 +2297,9 @@ async function driveLoop(): Promise<void> {
       setStatus(tiles.size === 0 ? "No photos here." : nphotos(tiles.size));
     }
     // The skeleton tail shows whenever more tiles can still arrive; not
-    // while resting for the rate limit (the pause branch below owns the
-    // status line for that state). Flipping it moves the skeletons in or
-    // out of the grid, so a real flip re-lays-out.
+    // while resting for the rate limit (statusLine says why instead).
+    // Flipping it moves the skeletons in or out of the grid, so a real
+    // flip re-lays-out.
     const loadingNow = !exhausted && !ratePauseUntil();
     if (overlay!.classList.contains("xtag-grid-loading") !== loadingNow) {
       overlay!.classList.toggle("xtag-grid-loading", loadingNow);
@@ -2265,7 +2316,7 @@ async function driveLoop(): Promise<void> {
     const need = gridEl
       && contentEdge - (overlay!.scrollTop + overlay!.clientHeight) < bufferPx();
     if (!need || exhausted) {
-      if (!exhausted) setStatus(nphotos(tiles.size));
+      if (!exhausted) setStatus(statusLine());
       await sleep(IDLE_MS);
       continue;
     }
@@ -2276,7 +2327,7 @@ async function driveLoop(): Promise<void> {
     // grid is merely hidden under the viewer; and a tile click is riding
     // the window scroll itself.
     if (!docked || navigating || !onPhotosFeed()) {
-      if (onPhotosFeed()) setStatus(nphotos(tiles.size));
+      if (onPhotosFeed()) setStatus(statusLine());
       await sleep(IDLE_MS);
       continue;
     }
@@ -2287,7 +2338,7 @@ async function driveLoop(): Promise<void> {
     // zero, and says when loading resumes.
     const pausedUntil = ratePauseUntil();
     if (pausedUntil) {
-      setStatus(`${nphotos(tiles.size)} · rate limit · loading resumes ${fmtTime(pausedUntil)}`);
+      setStatus(statusLine());
       await sleep(1000);
       continue;
     }
@@ -2889,11 +2940,13 @@ export function initMosaic(): void {
     if (active) placeOverlay();
     // The tab wears the grid's name while the grid is the view on
     // screen, X's ✓ stays off the Photos item (React re-renders restore
-    // both, so re-assert per batch), and an open menu gets its
-    // clip-path hole (see punchHole).
+    // both, so re-assert per batch), an open menu gets its clip-path
+    // hole (see punchHole), and a rate-limited native photos view gets
+    // its notice.
     assertTabLabel();
     assertMenuChecks();
     syncMenuHole();
+    assertRateNotice();
   });
   // A popup change applies on the spot in every open tab. The override
   // is cleared first: the reader just made a NEW choice, and a stale

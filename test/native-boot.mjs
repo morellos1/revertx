@@ -355,6 +355,30 @@ try {
   const warnAfter = await popup.evaluate(() => !document.getElementById("postgrid-warn").hidden);
   check("J popup: unticking writes storage and clears the warning", st.postgrid === false && !warnAfter, { st, warnAfter });
 
+  // K: a photos-timeline 429 puts a notice under the tab strip of X's
+  // OWN photos view, and only there
+  await page.goto("https://x.com/NASA/media?filter=photo"); await settle(page);
+  let note = await page.evaluate(() => document.getElementById("xtag-rate-note")?.textContent ?? null);
+  check("K no 429 yet: no rate notice", note === null, note);
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent("xtag:media-payload", { detail: JSON.stringify({
+      url: "https://x.com/i/api/graphql/abc/UserPhotoTimeline", body: "", status: 429,
+      remaining: "0", reset: String(Math.floor(Date.now() / 1000) + 900), kind: "media",
+    }) }));
+    document.querySelector("main").appendChild(document.createElement("div"));
+  });
+  await settle(page, 300);
+  note = await page.evaluate(() => document.getElementById("xtag-rate-note")?.textContent ?? null);
+  check("K after a 429: the notice names the limit and the return time",
+    typeof note === "string" && note.includes("loading limit") && /\d/.test(note), note);
+  // The fixture's Posts click pushes the URL without re-rendering; real
+  // X re-renders the column on every route change, so mimic that.
+  await page.click('a[role="tab"][href="/NASA"]');
+  await page.evaluate(() => document.querySelector("main").appendChild(document.createElement("div")));
+  await settle(page, 300);
+  note = await page.evaluate(() => document.getElementById("xtag-rate-note")?.textContent ?? null);
+  check("K off the photos feed: the notice leaves", note === null, note);
+
   const failed = results.filter((x) => !x.ok).length;
   console.log(`\n${results.length - failed}/${results.length} passed`);
   process.exitCode = failed ? 1 : 0;

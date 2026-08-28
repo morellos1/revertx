@@ -129,6 +129,12 @@ until the window resets and holds off replaying for 10 minutes beyond
 that. Closing the view logs a receipt to the console: requests spent,
 budget left, and why loading stopped.
 
+If the budget is spent anyway, x.com's own photos view fails for the
+rest of the window ("Something went wrong"). The extension then puts a
+one-line note under the profile's tab strip naming the time the window
+resets, and removes it when it does. The note is the only DOM the
+extension adds to the native photos view, and only in that state.
+
 **Remote code.** Still none. Timeline responses are data: they are parsed
 with `JSON.parse` and read for image URLs, dimensions and a paging cursor.
 No response is evaluated, and no script is fetched.

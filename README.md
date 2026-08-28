@@ -70,6 +70,11 @@ out. It stops asking well before the allowance is used up, and the view
 says when loading continues. Going back to a profile you already read
 shows the saved grid instead of loading it again.
 
+If the allowance still runs out (normal browsing spends it too), X's
+own photo pages fail with "Something went wrong" for the rest of the
+window. revertX then puts one line under the tab bar that says when
+photos return.
+
 If you never pick Mosaic, revertX makes no requests at all.
 
 ## How it works
