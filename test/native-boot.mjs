@@ -378,6 +378,13 @@ try {
   await settle(page, 300);
   note = await page.evaluate(() => document.getElementById("xtag-rate-note")?.textContent ?? null);
   check("K off the photos feed: the notice leaves", note === null, note);
+  // A full load in the same tab: the rate picture rides sessionStorage,
+  // and the init-time assert shows the notice with no mutation and no
+  // fresh 429 (X's own client backs off, so none may come).
+  await page.goto("https://x.com/NASA/media?filter=photo"); await settle(page);
+  note = await page.evaluate(() => document.getElementById("xtag-rate-note")?.textContent ?? null);
+  check("K a reload remembers the window: the notice returns without a new 429",
+    typeof note === "string" && note.includes("loading limit"), note);
 
   const failed = results.filter((x) => !x.ok).length;
   console.log(`\n${results.length - failed}/${results.length} passed`);

@@ -1696,6 +1696,7 @@ function noteRateHeaders(remaining: string | null, reset: string | null,
     const t = Number(reset);
     if (Number.isFinite(t) && t > 0) rateResetAt = t * 1000;
   }
+  saveRateState();
 }
 
 function noteRate429(): void {
@@ -1704,6 +1705,44 @@ function noteRate429(): void {
   last429At = Date.now();
   // A headerless 429 still pauses: a 15-min window is X's standard.
   if (rateResetAt < Date.now()) rateResetAt = Date.now() + 15 * 60_000;
+  saveRateState();
+}
+
+// --- the rate picture survives the page (same tab) -------------------------
+// The bucket is X's per-account window, but this module's picture of it
+// used to live only as long as the page. A reload while limited forgot
+// the 429s, and X's own client BACKS OFF after one (it can stop asking
+// entirely), so nothing re-taught them: the driver then read the dead
+// air as a complete feed and stall-ended a 4-photo grid in silence,
+// while the native view showed X's error with no note. The picture is
+// mirrored into sessionStorage (per tab; nothing leaves the page) and
+// restored at boot; an entry expires with the window it describes.
+const RATE_STATE_KEY = "xtag:rate";
+
+function saveRateState(): void {
+  try {
+    sessionStorage.setItem(RATE_STATE_KEY, JSON.stringify({
+      remaining: rateRemaining, resetAt: rateResetAt, last429At,
+      cooldownUntil: apiCooldownUntil,
+    }));
+  } catch { /* private mode etc.; the page-lifetime picture still works */ }
+}
+
+function loadRateState(): void {
+  try {
+    const raw = sessionStorage.getItem(RATE_STATE_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw) as Record<string, unknown>;
+    const resetAt = typeof s["resetAt"] === "number" ? s["resetAt"] : 0;
+    // The window it described is over; the next response teaches afresh.
+    if (Date.now() >= resetAt) return;
+    rateResetAt = resetAt;
+    if (typeof s["remaining"] === "number") rateRemaining = s["remaining"];
+    if (typeof s["last429At"] === "number") last429At = s["last429At"];
+    if (typeof s["cooldownUntil"] === "number") {
+      apiCooldownUntil = Math.max(apiCooldownUntil, s["cooldownUntil"]);
+    }
+  } catch { /* a corrupt entry teaches nothing */ }
 }
 
 // Non-zero = the driver must not cause fetches until this epoch-ms time.
@@ -2201,7 +2240,12 @@ function stashGrid(): void {
     entries,
     cursor: payloadCursor,
     template: payloadTemplate,
-    ended: feedEnded || exhausted,
+    // ONLY the hard end signals (terminate, confirmed cursor echo,
+    // media_count, no cursor) are worth caching. The soft stall end is
+    // not: a driver that stalls because a rate-limited X stopped
+    // answering looks identical to one at a true end, and caching that
+    // guess froze short grids at a handful of photos for the TTL.
+    ended: feedEnded,
     at: Date.now(),
   });
   while (gridCache.size > GRID_CACHE_MAX) {
@@ -2228,7 +2272,7 @@ function restoreGrid(): void {
     endFeed("cached end (memory)");
     exhausted = true;
   }
-  if (tiles.size) setStatus(nphotos(tiles.size));
+  if (tiles.size) setStatus(statusLine());
   console.info(`[xtag] mosaic: ${added} tiles restored from cache`);
 }
 
@@ -2826,6 +2870,10 @@ function onMenuClick(event: MouseEvent): void {
 // --- wiring ----------------------------------------------------------------
 
 export function initMosaic(): void {
+  // Before anything else: what this tab already learned about the rate
+  // window. Without it, a reload while limited boots blind and a
+  // backing-off X teaches nothing (see loadRateState).
+  loadRateState();
   watchGraphql();
   // Payloads from the MAIN-world interceptor: a JSON string in the event
   // detail (strings cross the isolated-world boundary unambiguously).
@@ -2851,6 +2899,9 @@ export function initMosaic(): void {
         typeof parsed.reset === "string" ? parsed.reset : null);
       if (parsed.status === 429) {
         noteRate429();
+        // Now, not on the next mutation batch: X can render its error
+        // view and then go quiet, and a batch may never come.
+        assertRateNotice();
         console.warn("[xtag] X answered 429 on the photos timeline; "
           + "grid loading pauses until the window resets");
         return;
@@ -2958,6 +3009,12 @@ export function initMosaic(): void {
   });
   // The first evaluation waits for the initial storage reads: the getter
   // answers "photos" until then, and a direct load of the photos URL
-  // with a stored grid default would otherwise never activate.
-  void settingsReady().then(evaluate);
+  // with a stored grid default would otherwise never activate. The rate
+  // notice gets its first look here too: with the picture restored from
+  // sessionStorage, a page that renders X's error before document_idle
+  // and then goes quiet would otherwise never show it.
+  void settingsReady().then(() => {
+    evaluate();
+    assertRateNotice();
+  });
 }

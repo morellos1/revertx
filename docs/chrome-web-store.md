@@ -133,7 +133,11 @@ If the budget is spent anyway, x.com's own photos view fails for the
 rest of the window ("Something went wrong"). The extension then puts a
 one-line note under the profile's tab strip naming the time the window
 resets, and removes it when it does. The note is the only DOM the
-extension adds to the native photos view, and only in that state.
+extension adds to the native photos view, and only in that state. Its
+picture of the window (remaining, reset time, last 429) is mirrored
+into the tab's sessionStorage under one key, so a reload while limited
+does not forget it; the entry expires with the window and nothing
+leaves the page.
 
 **Remote code.** Still none. Timeline responses are data: they are parsed
 with `JSON.parse` and read for image URLs, dimensions and a paging cursor.
