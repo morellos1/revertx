@@ -1,8 +1,8 @@
 import { NATIVE_KEY, type NativeReport } from "../core/native";
-import { readMediaGrid } from "../core/settings";
+import { readMediaView } from "../core/settings";
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
-const KEYS = ["mediagrid", "likestab", "postgrid", "sharecopy"] as const;
+const KEYS = ["likestab", "postgrid", "sharecopy"] as const;
 
 for (const key of KEYS) {
   const box = $<HTMLInputElement>(key);
@@ -10,6 +10,23 @@ for (const key of KEYS) {
     void chrome.storage.local.set({ [key]: box.checked });
   });
 }
+
+// The Media default is a 3-way choice (photos | mosaic | videos), one
+// stored `mediaview` string shared with the dropdown picks on the page.
+// The loading note shows while Mosaic is the pick; the other two views
+// are X's own and load nothing. The note is the one place the cost is
+// said up front: a second line on the injected menu item overflows X's
+// panel.
+const view = $<HTMLSelectElement>("mediaview");
+
+function syncMosaicNote(): void {
+  $("mosaic-note").hidden = view.value !== "mosaic";
+}
+
+view.addEventListener("change", () => {
+  void chrome.storage.local.set({ mediaview: view.value });
+  syncMosaicNote();
+});
 
 // Warn when a switch is on for a flag X no longer ships.
 function showWarnings(report: NativeReport | null | undefined, on: Record<string, boolean>): void {
@@ -19,20 +36,26 @@ function showWarnings(report: NativeReport | null | undefined, on: Record<string
 }
 
 (async () => {
-  const stored = await chrome.storage.local.get(
-    [...KEYS, "mediaview", "mediaphotos", NATIVE_KEY]);
+  // The whole snapshot: readMediaView reads three generations of keys.
+  const stored = await chrome.storage.local.get(null);
   const on: Record<string, boolean> = {
-    mediagrid: readMediaGrid(stored),
     likestab: stored["likestab"] !== false,
     postgrid: stored["postgrid"] === true,
     sharecopy: stored["sharecopy"] !== false,
   };
   for (const key of KEYS) $<HTMLInputElement>(key).checked = on[key];
+  view.value = readMediaView(stored);
+  syncMosaicNote();
   let report = stored[NATIVE_KEY] as NativeReport | null;
   showWarnings(report, on);
   chrome.storage.onChanged.addListener((changes) => {
     for (const key of KEYS) {
       if (changes[key]) on[key] = changes[key].newValue === true;
+    }
+    // A dropdown pick on the page while the popup is open: follow it.
+    if (changes["mediaview"]) {
+      view.value = readMediaView({ mediaview: changes["mediaview"].newValue });
+      syncMosaicNote();
     }
     if (changes[NATIVE_KEY]) report = changes[NATIVE_KEY].newValue as NativeReport | null;
     showWarnings(report, on);

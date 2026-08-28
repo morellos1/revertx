@@ -61,6 +61,7 @@ async function assembleFirefox() {
 await rm(outDir, { recursive: true, force: true });
 await mkdir(outDir, { recursive: true });
 await cp(path.join(root, "src", "styles", "popup.css"), path.join(outDir, "popup.css"));
+await cp(path.join(root, "src", "styles", "content.css"), path.join(outDir, "content.css"));
 
 if (watchMode) {
   await (await context(config)).watch();

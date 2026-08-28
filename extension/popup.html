@@ -11,10 +11,18 @@
   </header>
 
   <section>
-    <label class="row">
-      <input type="checkbox" id="mediagrid" checked>
-      <span>Media tab opens the photo grid</span>
+    <label class="row select-row">
+      <span>Media tab opens</span>
+      <select id="mediaview">
+        <option value="photos">Photo grid</option>
+        <option value="mosaic">Mosaic</option>
+        <option value="videos">Videos</option>
+      </select>
     </label>
+    <p class="hint" id="mosaic-note" hidden>Mosaic loads more photos as
+      you scroll. X limits how much an account can load at once, so on
+      long profiles loading can pause for a few minutes. The view says
+      when it continues.</p>
     <label class="row">
       <input type="checkbox" id="likestab" checked>
       <span>Likes tab on your profile</span>

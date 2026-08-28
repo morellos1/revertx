@@ -282,8 +282,9 @@ try {
   r = await readPage(page);
   check("E next boot: postgrid flipped, history not", r.attr && r.attr.likes === false && r.attr.postgrid === true && r.probe.carousel === false && r.probe.history === true && eq(r.probe.overrides, { [CAROUSEL]: false }), { attr: r.attr, probe: r.probe });
 
-  // F: migration from 1.x media choices
-  for (const [stored, want] of [[{ mediaview: "videos" }, false], [{ mediaphotos: false }, false], [{ mediaview: "grid" }, true], [{}, true]]) {
+  // F: migration from 1.x, 2.0 and unreleased-build media choices
+  // ("masonry" maps to the surviving mosaic view)
+  for (const [stored, want] of [[{ mediaview: "videos" }, false], [{ mediaphotos: false }, false], [{ mediaview: "grid" }, true], [{ mediaview: "masonry" }, true], [{}, true]]) {
     await clearStorage(); await setStorage(stored); await resetMirror();
     await page.reload(); await settle(page);
     st = await storage(["mediagrid"]);
@@ -328,19 +329,104 @@ try {
   await setStorage({ mediagrid: false, likestab: true, postgrid: true, native: { likes: true, postgrid: false, flags: { history: true, carousel: false } } });
   await popup.reload(); await popup.waitForTimeout(300);
   const ui = await popup.evaluate(() => ({
-    mediagrid: document.getElementById("mediagrid").checked,
+    mediaview: document.getElementById("mediaview").value,
+    mosaicNote: !document.getElementById("mosaic-note").hidden,
     likestab: document.getElementById("likestab").checked,
     postgrid: document.getElementById("postgrid").checked,
     sharecopy: document.getElementById("sharecopy").checked,
     likesWarn: !document.getElementById("likestab-warn").hidden,
     postgridWarn: !document.getElementById("postgrid-warn").hidden,
   }));
-  check("J popup: boxes from storage, warning only for the gone flag", !ui.mediagrid && ui.likestab && ui.postgrid && ui.sharecopy && !ui.likesWarn && ui.postgridWarn, ui);
+  check("J popup: controls from storage, warning only for the gone flag", ui.mediaview === "videos" && !ui.mosaicNote && ui.likestab && ui.postgrid && ui.sharecopy && !ui.likesWarn && ui.postgridWarn, ui);
+  // The select writes the shared mediaview key, and the rate note rides
+  // the Mosaic pick, never X's own two views.
+  await popup.evaluate(() => { const s = document.getElementById("mediaview"); s.value = "mosaic"; s.dispatchEvent(new Event("change")); });
+  await popup.waitForTimeout(200);
+  st = await storage(["mediaview"]);
+  const noteAfter = await popup.evaluate(() => !document.getElementById("mosaic-note").hidden);
+  check("J popup: picking mosaic writes mediaview and shows the rate note", st.mediaview === "mosaic" && noteAfter, { st, noteAfter });
+  await popup.evaluate(() => { const s = document.getElementById("mediaview"); s.value = "photos"; s.dispatchEvent(new Event("change")); });
+  await popup.waitForTimeout(200);
+  const noteOnPhotos = await popup.evaluate(() => !document.getElementById("mosaic-note").hidden);
+  check("J popup: X's own views carry no rate note", !noteOnPhotos, { noteOnPhotos });
   await popup.evaluate(() => { const b = document.getElementById("postgrid"); b.checked = false; b.dispatchEvent(new Event("change")); });
   await popup.waitForTimeout(200);
   st = await storage(["postgrid"]);
   const warnAfter = await popup.evaluate(() => !document.getElementById("postgrid-warn").hidden);
   check("J popup: unticking writes storage and clears the warning", st.postgrid === false && !warnAfter, { st, warnAfter });
+
+  // K: a photos-timeline 429 puts a notice under the tab strip of X's
+  // OWN photos view, and only there
+  await page.goto("https://x.com/NASA/media?filter=photo"); await settle(page);
+  let note = await page.evaluate(() => document.getElementById("xtag-rate-note")?.textContent ?? null);
+  check("K no 429 yet: no rate notice", note === null, note);
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent("xtag:media-payload", { detail: JSON.stringify({
+      url: "https://x.com/i/api/graphql/abc/UserPhotoTimeline", body: "", status: 429,
+      remaining: "0", reset: String(Math.floor(Date.now() / 1000) + 900), kind: "media",
+    }) }));
+    document.querySelector("main").appendChild(document.createElement("div"));
+  });
+  await settle(page, 300);
+  note = await page.evaluate(() => document.getElementById("xtag-rate-note")?.textContent ?? null);
+  check("K after a 429: the notice names the limit and the return time",
+    typeof note === "string" && note.includes("loading limit") && /\d/.test(note), note);
+  // The fixture's Posts click pushes the URL without re-rendering; real
+  // X re-renders the column on every route change, so mimic that.
+  await page.click('a[role="tab"][href="/NASA"]');
+  await page.evaluate(() => document.querySelector("main").appendChild(document.createElement("div")));
+  await settle(page, 300);
+  note = await page.evaluate(() => document.getElementById("xtag-rate-note")?.textContent ?? null);
+  check("K off the photos feed: the notice leaves", note === null, note);
+  // A full load in the same tab: the rate picture rides sessionStorage,
+  // and the init-time assert shows the notice with no mutation and no
+  // fresh 429 (X's own client backs off, so none may come).
+  await page.goto("https://x.com/NASA/media?filter=photo"); await settle(page);
+  note = await page.evaluate(() => document.getElementById("xtag-rate-note")?.textContent ?? null);
+  check("K a reload remembers the window: the notice returns without a new 429",
+    typeof note === "string" && note.includes("loading limit"), note);
+
+  // L: the quota pill shows bottom-right once the window runs low
+  await page.goto("https://x.com/NASA/media?filter=photo"); await settle(page);
+  const emitRate = (remaining) => page.evaluate((rem) => {
+    document.dispatchEvent(new CustomEvent("xtag:media-payload", { detail: JSON.stringify({
+      url: "https://x.com/i/api/graphql/abc/UserPhotoTimeline", body: "", status: 200,
+      remaining: String(rem), reset: String(Math.floor(Date.now() / 1000) + 600),
+      limit: "50", kind: "media",
+    }) }));
+  }, remaining);
+  const readPill = () => page.evaluate(() => document.getElementById("xtag-quota")?.textContent ?? null);
+  await emitRate(40); await settle(page, 200);
+  let pill = await readPill();
+  check("L a healthy budget shows no pill", pill === null, pill);
+  await emitRate(17); await settle(page, 200);
+  pill = await readPill();
+  const fillW = await page.evaluate(() => document.querySelector("#xtag-quota .xtag-quota-fill")?.style.width ?? null);
+  check("L a low budget shows the labeled pill with count, limit and reset time",
+    typeof pill === "string" && pill.includes("Image quota 17 of 50") && /\d/.test(pill), pill);
+  check("L the bar's fill is the remaining fraction", fillW === "34%", fillW);
+  await emitRate(0); await settle(page, 200);
+  pill = await readPill();
+  check("L an empty budget says used up", typeof pill === "string" && pill.includes("Image quota used up"), pill);
+  await page.click('a[role="tab"][href="/NASA"]');
+  await page.evaluate(() => document.querySelector("main").appendChild(document.createElement("div")));
+  await settle(page, 300);
+  pill = await readPill();
+  check("L off the photos feed: the pill leaves", pill === null, pill);
+
+  // M: empty photo pages on a profile X counts media on -> the soft note
+  await page.evaluate(() => sessionStorage.removeItem("xtag:rate"));
+  await page.goto("https://x.com/NASA/media?filter=photo"); await settle(page);
+  await page.evaluate(() => {
+    const emit = (detail) => document.dispatchEvent(new CustomEvent("xtag:media-payload", { detail: JSON.stringify(detail) }));
+    emit({ url: "https://x.com/i/api/graphql/abc/UserByScreenName", body: JSON.stringify({ screen_name: "NASA", media_count: 754 }), status: 200, kind: "profile" });
+    emit({ url: "https://x.com/i/api/graphql/abc/UserPhotoTimeline", body: "{}", status: 200, remaining: "40", reset: String(Math.floor(Date.now() / 1000) + 600), kind: "media" });
+    document.querySelector("main").appendChild(document.createElement("div"));
+  });
+  await settle(page, 300);
+  note = await page.evaluate(() => document.getElementById("xtag-rate-note")?.textContent ?? null);
+  check("M empty pages on a media-counting profile show the soft note",
+    typeof note === "string" && note.includes("sent no photos"), note);
 
   const failed = results.filter((x) => !x.ok).length;
   console.log(`\n${results.length - failed}/${results.length} passed`);
