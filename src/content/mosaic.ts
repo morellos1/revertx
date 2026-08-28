@@ -1794,13 +1794,15 @@ function nphotos(n: number): string {
 // The grid's status line: the count, and the pause whenever X's limit
 // has bitten. Said in EVERY non-exhausted state, docked or not: a
 // reader at the top of an empty rate-limited grid must see why it is
-// empty, never a bare "0 photos".
+// empty. With nothing on screen the count itself goes: "0 photos"
+// under a limit reads as an empty profile, which is a lie.
 function statusLine(): string {
   const pausedUntil = ratePauseUntil();
-  return pausedUntil
-    ? `${nphotos(tiles.size)} · X's loading limit · loading resumes `
-      + fmtTime(pausedUntil)
-    : nphotos(tiles.size);
+  if (!pausedUntil) return nphotos(tiles.size);
+  const when = fmtTime(pausedUntil);
+  return tiles.size === 0
+    ? `X's loading limit is used up · photos return at ${when}`
+    : `${nphotos(tiles.size)} · X's loading limit · loading resumes ${when}`;
 }
 
 // --- the native-view rate notice -------------------------------------------
@@ -1831,14 +1833,26 @@ function assertRateNotice(): void {
     if (existing.textContent !== text) existing.textContent = text;
     return;
   }
-  const strip = document.querySelector('main [role="tablist"]');
+  const strip = document.querySelector<HTMLElement>('main [role="tablist"]');
   if (!strip) return;
   const note = document.createElement("div");
   note.id = RATE_NOTE_ID;
   note.textContent = text;
   note.title = "X limits how much an account can load in 15 minutes, "
     + "shared with normal browsing. This note is from revertX.";
-  strip.insertAdjacentElement("afterend", note);
+  // Never beside the tablist: on x.com the strip's own wrapper sizes
+  // and clips to its tabs, so a sibling in there makes the bar taller
+  // while the text stays hidden. The note goes after the COLUMN CHILD
+  // the strip lives in, between the header block and the timeline (or
+  // X's error view), in plain column flow.
+  let anchor: HTMLElement = strip;
+  const col = primaryColumn();
+  if (col && col.contains(strip)) {
+    while (anchor.parentElement && anchor.parentElement !== col) {
+      anchor = anchor.parentElement;
+    }
+  }
+  anchor.insertAdjacentElement("afterend", note);
 }
 
 // The cursor a request ASKED with, read back out of its own URL; the
