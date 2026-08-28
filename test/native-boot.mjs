@@ -391,7 +391,8 @@ try {
   const emitRate = (remaining) => page.evaluate((rem) => {
     document.dispatchEvent(new CustomEvent("xtag:media-payload", { detail: JSON.stringify({
       url: "https://x.com/i/api/graphql/abc/UserPhotoTimeline", body: "", status: 200,
-      remaining: String(rem), reset: String(Math.floor(Date.now() / 1000) + 600), kind: "media",
+      remaining: String(rem), reset: String(Math.floor(Date.now() / 1000) + 600),
+      limit: "50", kind: "media",
     }) }));
   }, remaining);
   const readPill = () => page.evaluate(() => document.getElementById("xtag-quota")?.textContent ?? null);
@@ -400,11 +401,13 @@ try {
   check("L a healthy budget shows no pill", pill === null, pill);
   await emitRate(17); await settle(page, 200);
   pill = await readPill();
-  check("L a low budget shows the pill with the count and reset time",
-    typeof pill === "string" && pill.startsWith("17 left") && /\d/.test(pill), pill);
+  const fillW = await page.evaluate(() => document.querySelector("#xtag-quota .xtag-quota-fill")?.style.width ?? null);
+  check("L a low budget shows the labeled pill with count, limit and reset time",
+    typeof pill === "string" && pill.includes("Image quota 17 of 50") && /\d/.test(pill), pill);
+  check("L the bar's fill is the remaining fraction", fillW === "34%", fillW);
   await emitRate(0); await settle(page, 200);
   pill = await readPill();
-  check("L an empty budget says back at", typeof pill === "string" && pill.startsWith("0 left"), pill);
+  check("L an empty budget says used up", typeof pill === "string" && pill.includes("Image quota used up"), pill);
   await page.click('a[role="tab"][href="/NASA"]');
   await page.evaluate(() => document.querySelector("main").appendChild(document.createElement("div")));
   await settle(page, 300);

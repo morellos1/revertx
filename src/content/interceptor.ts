@@ -298,8 +298,9 @@
   };
 
   const emit = (url: string, body: string, status: number,
-    remaining: string | null, reset: string | null, kind = "media"): void => {
-    const detail = JSON.stringify({ url, body, status, remaining, reset, kind });
+    remaining: string | null, reset: string | null,
+    limit: string | null = null, kind = "media"): void => {
+    const detail = JSON.stringify({ url, body, status, remaining, reset, limit, kind });
     if (listenerReady) {
       dispatchPayload(detail);
       return;
@@ -324,18 +325,19 @@
       if (MEDIA_RE.test(url)) {
         const remaining = resp.headers.get("x-rate-limit-remaining");
         const reset = resp.headers.get("x-rate-limit-reset");
+        const limit = resp.headers.get("x-rate-limit-limit");
         if (resp.ok) {
           resp.clone().text()
-            .then((body) => emit(url, body, resp.status, remaining, reset))
+            .then((body) => emit(url, body, resp.status, remaining, reset, limit))
             .catch(() => { /* stream gone */ });
         } else {
           // A failed page still teaches: a 429 (or any refusal) carries
           // the budget headers the driver paces itself by.
-          emit(url, "", resp.status, remaining, reset);
+          emit(url, "", resp.status, remaining, reset, limit);
         }
       } else if (PROFILE_RE.test(url) && resp.ok) {
         resp.clone().text()
-          .then((body) => emit(url, body, resp.status, null, null, "profile"))
+          .then((body) => emit(url, body, resp.status, null, null, null, "profile"))
           .catch(() => { /* stream gone */ });
       }
     } catch { /* never break the page's own fetch */ }
@@ -346,7 +348,7 @@
   // only the wrapper body, which barely changes between builds). Bump
   // when the tap's behavior changes.
   try {
-    (window.fetch as typeof window.fetch & { __xtagV?: number }).__xtagV = 5;
+    (window.fetch as typeof window.fetch & { __xtagV?: number }).__xtagV = 6;
   } catch { /* marker only */ }
 
   // X's app is fetch-based; the XHR wrap is the belt.
@@ -373,14 +375,15 @@
         if (MEDIA_RE.test(this.__xtagUrl)) {
           const remaining = this.getResponseHeader("x-rate-limit-remaining");
           const reset = this.getResponseHeader("x-rate-limit-reset");
+          const limit = this.getResponseHeader("x-rate-limit-limit");
           if (this.status === 200 && typeof this.responseText === "string") {
-            emit(this.__xtagUrl, this.responseText, 200, remaining, reset);
+            emit(this.__xtagUrl, this.responseText, 200, remaining, reset, limit);
           } else if (this.status >= 400) {
-            emit(this.__xtagUrl, "", this.status, remaining, reset);
+            emit(this.__xtagUrl, "", this.status, remaining, reset, limit);
           }
         } else if (PROFILE_RE.test(this.__xtagUrl)
           && this.status === 200 && typeof this.responseText === "string") {
-          emit(this.__xtagUrl, this.responseText, 200, null, null, "profile");
+          emit(this.__xtagUrl, this.responseText, 200, null, null, null, "profile");
         }
       } catch { /* never break the page's own XHR */ }
     });

@@ -1880,26 +1880,52 @@ const QUOTA_ID = "xtag-quota";
 const QUOTA_SHOW_AT = 25;
 
 function assertQuotaPill(): void {
-  const existing = document.getElementById(QUOTA_ID);
+  let pill = document.getElementById(QUOTA_ID);
   const wanted = onPhotosFeed() && rateRemaining !== null
     && rateRemaining <= QUOTA_SHOW_AT && Date.now() < rateResetAt;
-  if (!wanted) {
-    existing?.remove();
+  if (!wanted || rateRemaining === null) {
+    pill?.remove();
     return;
+  }
+  if (!pill) {
+    pill = document.createElement("div");
+    pill.id = QUOTA_ID;
+    pill.title = "Photo page loads left in X's 15-minute window, shared "
+      + "with normal browsing. This pill is from revertX.";
+    const label = document.createElement("span");
+    const track = document.createElement("div");
+    track.className = "xtag-quota-track";
+    track.appendChild(document.createElement("div"))
+      .className = "xtag-quota-fill";
+    pill.append(label, track);
+    document.body.appendChild(pill);
   }
   const text = rateRemaining === 0
-    ? `0 left · back at ${fmtTime(rateResetAt)}`
-    : `${rateRemaining} left · resets ${fmtTime(rateResetAt)}`;
-  if (existing) {
-    if (existing.textContent !== text) existing.textContent = text;
-    return;
+    ? `Image quota used up · back at ${fmtTime(rateResetAt)}`
+    : rateLimit !== null
+      ? `Image quota ${rateRemaining} of ${rateLimit} · resets ${fmtTime(rateResetAt)}`
+      : `Image quota: ${rateRemaining} left · resets ${fmtTime(rateResetAt)}`;
+  const label = pill.firstElementChild as HTMLElement;
+  if (label.textContent !== text) label.textContent = text;
+  // The bar needs a denominator; without one the label alone carries it.
+  const track = pill.querySelector<HTMLElement>(".xtag-quota-track");
+  if (track) {
+    const show = rateLimit !== null && rateLimit > 0;
+    track.style.display = show ? "" : "none";
+    if (show) {
+      const fill = track.firstElementChild as HTMLElement;
+      const width = `${Math.round(Math.max(0, Math.min(1, rateRemaining / rateLimit!)) * 100)}%`;
+      if (fill.style.width !== width) fill.style.width = width;
+    }
   }
-  const pill = document.createElement("div");
-  pill.id = QUOTA_ID;
-  pill.textContent = text;
-  pill.title = "Photo page loads left in X's 15-minute window, shared "
-    + "with normal browsing. This pill is from revertX.";
-  document.body.appendChild(pill);
+  // Centered on the COLUMN, not the viewport: X's column sits off
+  // center between its sidebars, and a viewport-centered pill reads as
+  // misplaced against the grid.
+  const col = primaryColumn();
+  const rect = col?.getBoundingClientRect();
+  const cx = rect ? rect.left + rect.width / 2 : window.innerWidth / 2;
+  const left = `${Math.round(cx)}px`;
+  if (pill.style.left !== left) pill.style.left = left;
 }
 
 function assertRateNotice(): void {
@@ -3025,7 +3051,7 @@ export function initMosaic(): void {
     try {
       const parsed = JSON.parse(detail) as {
         url?: unknown; body?: unknown; status?: unknown;
-        remaining?: unknown; reset?: unknown; kind?: unknown;
+        remaining?: unknown; reset?: unknown; limit?: unknown; kind?: unknown;
       };
       // A profile payload only carries the media_count ceiling; it spends
       // a different rate bucket, so it must not touch the driver's budget.
@@ -3038,7 +3064,8 @@ export function initMosaic(): void {
       // The budget lesson rides EVERY forwarded response, success or not.
       noteRateHeaders(
         typeof parsed.remaining === "string" ? parsed.remaining : null,
-        typeof parsed.reset === "string" ? parsed.reset : null);
+        typeof parsed.reset === "string" ? parsed.reset : null,
+        typeof parsed.limit === "string" ? parsed.limit : null);
       if (parsed.status === 429) {
         noteRate429();
         // Now, not on the next mutation batch: X can render its error

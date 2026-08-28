@@ -184,9 +184,9 @@ html.xtag-gridmode:not(.xtag-grid-borrowing)
     Roboto, Helvetica, Arial, sans-serif;
 }
 
-/* The quota pill (assertQuotaPill): what is left of X's photo-loading
-   window once it runs low, on the grid and on X's own photos view
-   alike. Bottom-center: X owns both bottom corners (the message
+/* The quota pill (assertQuotaPill): the image quota once it runs low,
+   on the grid and on X's own photos view alike. Bottom of the COLUMN's
+   center (left set inline); X owns both bottom corners (the message
    drawer, Grok), and the pill must never sit over their surfaces. */
 #xtag-quota {
   position: fixed;
@@ -194,14 +194,32 @@ html.xtag-gridmode:not(.xtag-grid-borrowing)
   transform: translateX(-50%);
   bottom: 24px;
   z-index: 1001;
-  padding: 8px 14px;
-  border-radius: 9999px;
+  padding: 8px 14px 9px;
+  border-radius: 16px;
   background: rgba(22, 24, 28, 0.92);
   border: 1px solid rgb(47, 51, 54);
   color: rgb(231, 233, 234);
   font-size: 13px;
+  white-space: nowrap;
+  text-align: center;
   font-family: "TwitterChirp", -apple-system, BlinkMacSystemFont, "Segoe UI",
     Roboto, Helvetica, Arial, sans-serif;
+}
+
+#xtag-quota .xtag-quota-track {
+  height: 3px;
+  border-radius: 2px;
+  margin-top: 6px;
+  background: rgb(62, 65, 68);
+  overflow: hidden;
+}
+
+/* X's own blue; the fill length is the budget at a glance. */
+#xtag-quota .xtag-quota-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: rgb(29, 155, 240);
+  transition: width 300ms ease;
 }
 
 /* One line under the profile's tab strip while X's own photos view is
