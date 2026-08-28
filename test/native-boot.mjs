@@ -411,6 +411,20 @@ try {
   pill = await readPill();
   check("L off the photos feed: the pill leaves", pill === null, pill);
 
+  // M: empty photo pages on a profile X counts media on -> the soft note
+  await page.evaluate(() => sessionStorage.removeItem("xtag:rate"));
+  await page.goto("https://x.com/NASA/media?filter=photo"); await settle(page);
+  await page.evaluate(() => {
+    const emit = (detail) => document.dispatchEvent(new CustomEvent("xtag:media-payload", { detail: JSON.stringify(detail) }));
+    emit({ url: "https://x.com/i/api/graphql/abc/UserByScreenName", body: JSON.stringify({ screen_name: "NASA", media_count: 754 }), status: 200, kind: "profile" });
+    emit({ url: "https://x.com/i/api/graphql/abc/UserPhotoTimeline", body: "{}", status: 200, remaining: "40", reset: String(Math.floor(Date.now() / 1000) + 600), kind: "media" });
+    document.querySelector("main").appendChild(document.createElement("div"));
+  });
+  await settle(page, 300);
+  note = await page.evaluate(() => document.getElementById("xtag-rate-note")?.textContent ?? null);
+  check("M empty pages on a media-counting profile show the soft note",
+    typeof note === "string" && note.includes("sent no photos"), note);
+
   const failed = results.filter((x) => !x.ok).length;
   console.log(`\n${results.length - failed}/${results.length} passed`);
   process.exitCode = failed ? 1 : 0;

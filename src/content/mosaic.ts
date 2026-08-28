@@ -1819,6 +1819,20 @@ function nphotos(n: number): string {
   return n === 1 ? "1 photo" : `${n} photos`;
 }
 
+// The settled line. A grid with tiles counts them. Empty, it depends
+// on why: when X itself says the profile HAS media (media_count) and
+// still sent none, the feed is withheld, not absent (X soft-throttles
+// an account by answering photo timelines with empty pages while the
+// budget headers stay healthy; measured live). Saying "No photos
+// here." then is a lie; say what happened instead.
+function settleStatus(): string {
+  if (tiles.size > 0) return nphotos(tiles.size);
+  const stated = profileMediaCounts.get(gridHandle);
+  return stated !== undefined && stated > 0
+    ? "X sent no photos · try again later"
+    : "No photos here.";
+}
+
 // The grid's status line: the count, and the pause whenever X's limit
 // has bitten. Said in EVERY non-exhausted state, docked or not: a
 // reader at the top of an empty rate-limited grid must see why it is
@@ -1845,6 +1859,13 @@ function statusLine(): string {
 const RATE_NOTE_ID = "xtag-rate-note";
 const RATE_429_FRESH_MS = 16 * 60_000;
 let last429At = 0;
+// When X last answered a photos page EMPTY for a profile whose own
+// media_count says there is media. That is the soft-throttle shape: no
+// 429, healthy budget headers, and still nothing served (measured
+// live; X's client then backs off entirely). The native view shows a
+// bare "no photos" then, which reads as an empty profile.
+let softEmptyAt = 0;
+const SOFT_EMPTY_FRESH_MS = 5 * 60_000;
 
 // --- the quota pill --------------------------------------------------------
 // "17 left", where the reader can see it while scrolling: once the
@@ -1883,15 +1904,22 @@ function assertQuotaPill(): void {
 
 function assertRateNotice(): void {
   const existing = document.getElementById(RATE_NOTE_ID);
-  const wanted = !active && onPhotosFeed()
-    && Date.now() - last429At < RATE_429_FRESH_MS
-    && Date.now() < rateResetAt;
+  const now = Date.now();
+  const limited = now - last429At < RATE_429_FRESH_MS && now < rateResetAt;
+  // The soft tier only when the native grid is actually empty: a
+  // normal profile's stray empty page (a video-only stretch) must not
+  // put a warning under a grid full of photos.
+  const softEmpty = !limited && !active && onPhotosFeed()
+    && now - softEmptyAt < SOFT_EMPTY_FRESH_MS
+    && !document.querySelector('[data-testid="primaryColumn"] a[href*="/photo/"]');
+  const wanted = !active && onPhotosFeed() && (limited || softEmpty);
   if (!wanted) {
     existing?.remove();
     return;
   }
-  const text = "X's loading limit is used up · photos return at "
-    + fmtTime(rateResetAt);
+  const text = limited
+    ? "X's loading limit is used up · photos return at " + fmtTime(rateResetAt)
+    : "X sent no photos · try again later";
   if (existing) {
     if (existing.textContent !== text) existing.textContent = text;
     return;
@@ -1992,6 +2020,14 @@ function handleMediaPayload(url: string, body: string): void {
   // the reader may be on a different profile, and the non-advancing-cursor
   // end signal must never cross that line.
   const srcHandle = (location.pathname.split("/")[1] ?? "").toLowerCase();
+  // The soft-throttle signature, read on BOTH paths (an inactive grid
+  // buffers payloads unparsed, and the native view is exactly where
+  // the soft note lives): a photos page carrying no media at all, for
+  // a profile X itself counts media on. A string scan, not a parse.
+  if (!body.includes('"media_url_https"')) {
+    const stated = profileMediaCounts.get(srcHandle);
+    if (stated !== undefined && stated > 0) softEmptyAt = Date.now();
+  }
   if (active) {
     applyPayload(url, body, srcHandle);
     return;
@@ -2396,7 +2432,7 @@ async function driveLoop(): Promise<void> {
         // media_count) fire first and the harvest mints only once the tab
         // fronts; the settled status must follow the count, or it reads
         // "No photos here." under a visible tile (seen live).
-        setStatus(tiles.size === 0 ? "No photos here." : nphotos(tiles.size));
+        setStatus(settleStatus());
       }
     }
     // X's own ceiling: media_count from UserByScreenName counts photos
@@ -2415,7 +2451,7 @@ async function driveLoop(): Promise<void> {
     // of waiting out ~6s of stall patience after the last tile.
     if (feedEnded && !exhausted) {
       exhausted = true;
-      setStatus(tiles.size === 0 ? "No photos here." : nphotos(tiles.size));
+      setStatus(settleStatus());
     }
     // The skeleton tail shows whenever more tiles can still arrive; not
     // while resting for the rate limit (statusLine says why instead).
@@ -2510,7 +2546,7 @@ async function driveLoop(): Promise<void> {
         stalls++;
         if (stalls >= STALLS_FOR_END) {
           exhausted = true;
-          setStatus(tiles.size === 0 ? "No photos here." : nphotos(tiles.size));
+          setStatus(settleStatus());
           continue;
         }
       }
@@ -2581,6 +2617,23 @@ async function driveLoop(): Promise<void> {
     // is the reader's, so it is borrowed for the step and put straight back,
     // with the feed un-clipped for the duration so a walk through it means
     // something. Rare by construction, and it degrades rather than stops.
+    //
+    // But it does not repeat forever: a drive that keeps yielding
+    // nothing is the same stall as waiting at the bottom, and it ends
+    // the same way. X can serve EMPTY photo timelines on a healthy
+    // budget (a soft-throttled account, measured live: boot fires ~7
+    // requests, all empty, then X's client backs off entirely), and an
+    // un-capped drive borrow-jumped the window every step forever: the
+    // reader saw flicker and skeletons that never settled. Any later
+    // tile clears the soft end as always.
+    if (!progressed && settled) {
+      stalls++;
+      if (stalls >= STALLS_FOR_END) {
+        exhausted = true;
+        setStatus(settleStatus());
+        continue;
+      }
+    }
     borrowWindow();
     try {
       const realDoc = document.documentElement.scrollHeight;
