@@ -184,13 +184,15 @@ html.xtag-gridmode:not(.xtag-grid-borrowing)
     Roboto, Helvetica, Arial, sans-serif;
 }
 
-/* The bottom-right quota pill (assertQuotaPill): what is left of X's
-   photo-loading window once it runs low, on the grid and on X's own
-   photos view alike. Sits above X's bottom-right drawer. */
+/* The quota pill (assertQuotaPill): what is left of X's photo-loading
+   window once it runs low, on the grid and on X's own photos view
+   alike. Bottom-center: X owns both bottom corners (the message
+   drawer, Grok), and the pill must never sit over their surfaces. */
 #xtag-quota {
   position: fixed;
-  right: 16px;
-  bottom: 84px;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 24px;
   z-index: 1001;
   padding: 8px 14px;
   border-radius: 9999px;

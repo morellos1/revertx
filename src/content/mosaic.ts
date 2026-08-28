@@ -1588,6 +1588,14 @@ let apiCooldownUntil = 0;
 // reads that as no progress, and a deep profile ends early (measured: a
 // 297-photo profile stopped at 79).
 let cursorOurs = false;
+// When a PASSIVE page last minted a new tile. X's own client crawls
+// this same feed behind the clip (the reader's scroll drives its
+// virtualizer) and cannot be stopped; while its pages are delivering
+// new tiles, a cursor extension of ours buys the same depth twice.
+// The driver yields to a fresh passive page (see driveLoop) so there
+// is one buyer at a time.
+let lastPassiveProgressAt = 0;
+const PASSIVE_QUIET_MS = 4000;
 // The cursor path has answered with something other than a page, so deep
 // loading falls back to driving the window until the next activation. Kept
 // apart from cursorOurs, which answers a different question (whose cursor
@@ -1930,7 +1938,7 @@ function applyPayload(url: string, body: string, srcHandle: string): void {
     const cursors: string[] = [];
     const flags = { terminated: false };
     scanApiPayload(parsed, media, cursors, flags);
-    mintApiTiles(media);
+    if (mintApiTiles(media) > 0) lastPassiveProgressAt = Date.now();
     payloadSeen = true;
     const owned = media.filter(
       (m) => m.href.toLowerCase().startsWith(`/${gridHandle}/status/`)).length;
@@ -2459,6 +2467,17 @@ async function driveLoop(): Promise<void> {
     // have different ends.
     const willExtend = !extendBroken && !feedEnded && !!payloadTemplate
       && !!payloadCursor;
+    // One buyer at a time: while X's own crawl is delivering NEW tiles
+    // passively, the cursor does not ask; the profile loads at exactly
+    // the native grid's pace and cost. The cursor asks once X goes
+    // quiet: stalled, backed off, ended, or serving nothing new past a
+    // cached frontier (a revisit's passive pages mint nothing, so the
+    // gate never holds there).
+    if (willExtend && Date.now() - lastPassiveProgressAt < PASSIVE_QUIET_MS) {
+      setStatus(statusLine());
+      await sleep(POLL_MS);
+      continue;
+    }
     const doc = document.documentElement;
     // The document's bottom is not the feed's end. The page's scroll is
     // the READER'S, and its end is simply the last tile they can see,
@@ -2597,6 +2616,7 @@ function activate(): void {
   payloadTemplate = null;
   payloadCursor = null;
   cursorOurs = false;
+  lastPassiveProgressAt = 0;
   // A stale template is X's deploy, not this profile's; the next activation
   // gets a fresh one from the interceptor and deserves the cursor path back.
   extendBroken = false;
