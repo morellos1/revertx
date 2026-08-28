@@ -433,8 +433,16 @@ function placeOverlay(): void {
     overlay.style.bottom = "";
     overlay.style.height = `${Math.max(window.innerHeight - bar, 200)}px`;
   }
-  overlay.style.left = `${rect.left}px`;
-  overlay.style.width = `${rect.width}px`;
+  // Inside the column's own border lines: primaryColumn paints 1px side
+  // borders (measured live) that run the full scroll length, and a
+  // full-width overlay covers them. Inset by the real border widths and
+  // X's own lines stay visible beside the grid, in whatever color the
+  // theme gives them.
+  const colStyle = getComputedStyle(col);
+  const borderL = parseFloat(colStyle.borderLeftWidth) || 0;
+  const borderR = parseFloat(colStyle.borderRightWidth) || 0;
+  overlay.style.left = `${rect.left + borderL}px`;
+  overlay.style.width = `${rect.width - borderL - borderR}px`;
   // The column's width is the layout's one input besides the ratios;
   // re-lay-out when it actually changed (resize, sidebar flex).
   if (gridEl && Math.abs(gridEl.clientWidth - lastLayoutWidth) > 1) scheduleLayout();
