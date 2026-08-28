@@ -28,7 +28,7 @@ worth a next version, not a rescue.
 | 1.x | A userland grid and a framed Likes pane, no longer shipped. |
 | 2.0.0 | Submitted 2026-08-21, superseded before publication. |
 | 2.0.1 | X's own layouts. The first 2.x the store publishes. |
-| 2.1 | UNRELEASED, branch `feature/mosaic-grid`. Adds the Mosaic view. Everything under "The Mosaic view" below applies to that submission and to no published version. |
+| 2.1 | UNRELEASED, branch `feature/mosaic-grid`. Adds the Masonry and Mosaic views. Everything under "The Masonry and Mosaic views" below applies to that submission and to no published version. |
 
 ## Listing
 
@@ -75,11 +75,12 @@ For 2.1, the summary and the first line stay as they are (the four
 restores are still the point) and one paragraph goes in before the
 closing two:
 
-> Mosaic, an extra Media tab view. Off unless you pick it from the tab's
-> own dropdown. It lays the same photos out at their real shapes instead
-> of square crops. It loads pages through your own account's rate limit,
-> so it says so where you pick it, and it stops loading before your
-> budget runs out.
+> Masonry and Mosaic, two extra Media tab views. Off unless you pick one
+> from the tab's own dropdown. Both lay the same photos out at their real
+> shapes instead of square crops: Masonry in columns, Mosaic in rows that
+> fill the width. They load pages through your own account's rate limit,
+> so the popup says so where you pick them, and they stop loading before
+> your budget runs out.
 
 Then the "collects nothing, sends nothing" paragraph needs its "runs no
 background process" clause kept honest: it is still true.
@@ -93,22 +94,24 @@ background process" clause kept honest: it is still true.
 
 From 2.1, add to that sentence:
 
-> It also offers one alternative layout for the same media the tab already
-> shows, a variable-height mosaic in place of the square grid.
+> It also offers two alternative layouts for the same media the tab
+> already shows, variable-height views in place of the square grid.
 
 Both halves are the same purpose: how one site's own content is laid out.
-The mosaic adds no new surface, no new site and no new data.
+The two views add no new surface, no new site and no new data.
 
-## The Mosaic view (2.1, unreleased)
+## The Masonry and Mosaic views (2.1, unreleased)
 
 Everything here describes `feature/mosaic-grid` and applies from the
 version that ships it. It is the first feature that makes a request, so it
 is the first that a reviewer will stop on. Answer plainly.
 
-**What it is.** An optional third choice in the Media tab's dropdown,
-beside Videos and Photos, off unless the user picks it. It draws the same
-photos the tab already shows, at their own aspect ratios instead of a
-square crop.
+**What they are.** Two optional choices in the Media tab's dropdown,
+beside Videos and Photos, off unless the user picks one. Both draw the
+same photos the tab already shows, at their own aspect ratios instead of
+a square crop: Masonry places each photo in a column, Mosaic fits them
+into rows that fill the width. They differ only in that layout pass;
+everything below is true of both.
 
 **Where the photos come from.** Two sources, in this order:
 
@@ -131,7 +134,8 @@ and the request carries the reader's session, so neither the address nor
 the image host may be taken on trust.
 
 **Rate limiting.** X's photo-timeline budget is 50 requests per 15 minutes
-per account, shared with x.com's own timelines. The extension reads the
+per account, shared with x.com's own timelines. Both views share one
+loader, so the cost is the same whichever is picked. The extension reads the
 `x-rate-limit-remaining` header on every response and stops requesting
 while 8 remain, telling the user when loading resumes, so the site's own
 feeds keep the rest. If x.com answers 429 anyway, it stops requesting
@@ -151,7 +155,7 @@ third party; there is no server to reach.
 
 | Field | Justification |
 | --- | --- |
-| `storage` | Two things, both local: the user's preference for each feature (from 2.1 the Media tab's is a choice of three views rather than a switch), and a note of which of X's own feature flags the last page load found, so the popup can tell the user when X has removed a layout. No browsing history, no account data. |
+| `storage` | Two things, both local: the user's preference for each feature (from 2.1 the Media tab's is a choice of four views rather than a switch), and a note of which of X's own feature flags the last page load found, so the popup can tell the user when X has removed a layout. No browsing history, no account data. |
 | Host access | None requested. The content scripts are declared for `https://x.com/*` only. |
 | Remote code | None. No script is fetched or evaluated at runtime. |
 

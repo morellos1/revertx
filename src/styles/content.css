@@ -16,6 +16,10 @@
      on document.body (the one parent React never reconciles), so it needs
      its own stacking. */
   z-index: 1000;
+  /* The menu hole grows and collapses in step with X's dropdown fade
+     (see setHole); Chrome interpolates same-structure path() values.
+     Only clip-path: the placement writes must never animate. */
+  transition: clip-path 150ms ease;
   /* NO INTERNAL SCROLL, IN EITHER MODE. `overflow: hidden` refuses the
      wheel, so it chains straight out to the page, while leaving the box
      programmatically scrollable, which is what syncScroll needs. Giving
@@ -174,16 +178,6 @@ html.xtag-gridmode:not(.xtag-grid-borrowing)
 @media (prefers-reduced-motion: reduce) {
   .xtag-skel,
   .xtag-tile { animation: none; }
-}
-
-/* The Mosaic menu item's second line: the rate-cost note, in X's own dim
-   menu-subtitle voice (readable on both menu surfaces). */
-.xtag-menu-note {
-  font-size: 11px;
-  line-height: 1.3;
-  margin-top: 2px;
-  font-weight: 400;
-  color: rgb(113, 118, 123);
 }
 
 .xtag-grid-status {

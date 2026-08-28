@@ -7,9 +7,9 @@ and adds one it never had:
 - **Likes tab on your own profile**, instead of the History page.
 - **Photo grid in posts** (2x2) instead of the slider. Off by default.
 - **Copy link first** in the share menu.
-- **Mosaic**, an optional Media tab view that shows every photo at its own
-  shape instead of a square crop. Off by default; it is the one feature
-  that spends your account's rate limit (see below).
+- **Masonry and Mosaic**, optional Media tab views that show every photo
+  at its own shape instead of a square crop. Off by default; they are the
+  one feature that spends your account's rate limit (see below).
 
 No servers, no analytics, no tracking. One permission (`storage`), x.com only.
 
@@ -43,31 +43,34 @@ No servers, no analytics, no tracking. One permission (`storage`), x.com only.
 Click the revertX icon in your toolbar to turn each feature on or off.
 Reload x.com after a change.
 
-**Media tab opens** is a choice of three: the **photo grid** (X's own),
-**Mosaic**, or **Videos** (X's default). The Media tab's own dropdown
-carries the same three, and picking one there sets it for next time too.
-Press Escape in a mosaic to drop back to X's grid for that visit only.
+**Media tab opens** is a choice of four: the **photo grid** (X's own),
+**Masonry**, **Mosaic**, or **Videos** (X's default). Masonry is
+Pinterest-style columns. Mosaic lays photos into justified rows with no
+gaps, and a landscape photo gets a full row of its own. The Media tab's
+own dropdown carries the same four, and picking one there sets it for
+next time too. Press Escape in either view to drop back to X's grid for
+that visit only.
 
 While the Likes tab is on, X's History page (`/i/history`) does not work.
 Both share one X feature flag.
 
-### What Mosaic costs
+### What Masonry and Mosaic cost
 
 Every other feature is a flag, a URL or a DOM change, and costs nothing.
-Mosaic is different: X's photo grid loads a page at a time, so a mosaic
-that runs ahead of you has to ask X for the next page. Those requests use
+These two views are different: X's photo grid loads a page at a time, so
+a grid that runs ahead of you has to ask X for the next page. Those requests use
 your own session and come out of the same per-account budget X's own
 timelines draw on (measured at 50 requests per 15 minutes). Reading one
 profile of about 200 photos to the end costs 10 to 20 of them, so a few
 profiles in a row can empty it.
 
-Three things keep that in hand. Most pages are free: the mosaic reads the
+Three things keep that in hand. Most pages are free: the grid reads the
 responses X's own page already fetched, and only asks for a page when it
 has run out. It stops asking well before the budget is empty and tells you
 when loading resumes. Revisiting a profile paints from what it already
 holds instead of buying it again.
 
-If you never pick Mosaic, revertX makes no requests at all.
+If you never pick Masonry or Mosaic, revertX makes no requests at all.
 
 ## How it works
 
@@ -84,11 +87,13 @@ Each feature uses a different trick. None of them rewrites X's code.
 - **Photo grid in posts:** a feature flag. `rweb_media_carousel_enabled`
   set to `false` brings back the 2x2 layout.
 - **Copy link:** a DOM reorder of the share menu.
-- **Mosaic:** an overlay of X's own photos, laid out by revertX. Each
-  photo's real dimensions ride along in X's timeline responses, so tiles
-  are placed at the right shape before any image loads and nothing on
-  screen shifts as the page fills. The images are X's thumbnails and every
-  tile opens X's own viewer.
+- **Masonry / Mosaic:** an overlay of X's own photos, laid out by
+  revertX. Each photo's real dimensions ride along in X's timeline
+  responses, so tiles are placed at the right shape before any image
+  loads and nothing on screen shifts as the page fills. Masonry is
+  shortest-column placement; Mosaic is justified rows with no gaps,
+  where a photo wider than 4:3 takes the full row. The images are X's
+  thumbnails and every tile opens X's own viewer.
 
 The flags are patched through an accessor on `window.__INITIAL_STATE__`.
 The popup warns when X no longer ships a flag, and the switch does nothing.

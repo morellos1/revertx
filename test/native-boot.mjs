@@ -282,8 +282,9 @@ try {
   r = await readPage(page);
   check("E next boot: postgrid flipped, history not", r.attr && r.attr.likes === false && r.attr.postgrid === true && r.probe.carousel === false && r.probe.history === true && eq(r.probe.overrides, { [CAROUSEL]: false }), { attr: r.attr, probe: r.probe });
 
-  // F: migration from 1.x media choices
-  for (const [stored, want] of [[{ mediaview: "videos" }, false], [{ mediaphotos: false }, false], [{ mediaview: "grid" }, true], [{}, true]]) {
+  // F: migration from 1.x media choices, and from the prerelease
+  // "mosaicwide" the justified view was called for one round.
+  for (const [stored, want] of [[{ mediaview: "videos" }, false], [{ mediaphotos: false }, false], [{ mediaview: "grid" }, true], [{ mediaview: "mosaicwide" }, true], [{ mediaview: "masonry" }, true], [{}, true]]) {
     await clearStorage(); await setStorage(stored); await resetMirror();
     await page.reload(); await settle(page);
     st = await storage(["mediagrid"]);
@@ -337,12 +338,19 @@ try {
     postgridWarn: !document.getElementById("postgrid-warn").hidden,
   }));
   check("J popup: controls from storage, warning only for the gone flag", ui.mediaview === "videos" && !ui.mosaicNote && ui.likestab && ui.postgrid && ui.sharecopy && !ui.likesWarn && ui.postgridWarn, ui);
-  // The select writes the shared mediaview key, and the rate note rides the Mosaic pick only.
-  await popup.evaluate(() => { const v = document.getElementById("mediaview"); v.value = "mosaic"; v.dispatchEvent(new Event("change")); });
+  // The select writes the shared mediaview key, and the rate note rides
+  // BOTH revertX views (they share one loader), never X's own two.
+  for (const view of ["mosaic", "masonry"]) {
+    await popup.evaluate((v) => { const s = document.getElementById("mediaview"); s.value = v; s.dispatchEvent(new Event("change")); }, view);
+    await popup.waitForTimeout(200);
+    st = await storage(["mediaview"]);
+    const noteAfter = await popup.evaluate(() => !document.getElementById("mosaic-note").hidden);
+    check(`J popup: picking ${view} writes mediaview and shows the rate note`, st.mediaview === view && noteAfter, { st, noteAfter });
+  }
+  await popup.evaluate(() => { const s = document.getElementById("mediaview"); s.value = "photos"; s.dispatchEvent(new Event("change")); });
   await popup.waitForTimeout(200);
-  st = await storage(["mediaview"]);
-  const noteAfter = await popup.evaluate(() => !document.getElementById("mosaic-note").hidden);
-  check("J popup: picking Mosaic writes mediaview and shows the rate note", st.mediaview === "mosaic" && noteAfter, { st, noteAfter });
+  const noteOnPhotos = await popup.evaluate(() => !document.getElementById("mosaic-note").hidden);
+  check("J popup: X's own views carry no rate note", !noteOnPhotos, { noteOnPhotos });
   await popup.evaluate(() => { const b = document.getElementById("postgrid"); b.checked = false; b.dispatchEvent(new Event("change")); });
   await popup.waitForTimeout(200);
   st = await storage(["postgrid"]);

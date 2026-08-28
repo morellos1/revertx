@@ -19,12 +19,17 @@
 // The mosaic rides ONE timeline: photos. X partitions media server-side,
 // so a mixed photo+video mosaic has no single source. Videos keep X's view.
 //
-// X's media dropdown gets a third option: Videos / Photos / **Mosaic** (an
-// item cloned from X's own, so it wears their styling). A pick PERSISTS
-// (user ask 2026-08-27): the dropdown items and the popup's "Media tab
-// opens" select write the same `mediaview` choice, so whatever was picked
-// last is what the Media tab opens next time. Escape is the one
-// per-visit override, and it writes nothing.
+// X's media dropdown gets a third and a fourth option: Videos / Photos /
+// **Masonry** / **Mosaic** (items cloned from X's own, so they wear
+// their styling; renamed from Mosaic / Mosaic Wide 2026-08-27, user ask
+// for better names: Masonry is the standard word for the column layout,
+// and a mosaic is tiles fitted with no gaps, which is exactly the
+// justified view). The two modes share every mechanism here and differ
+// ONLY in the layout pass (layoutColumns vs layoutWideRows). A pick
+// PERSISTS (user ask 2026-08-27): the dropdown items and the popup's
+// "Media tab opens" select write the same `mediaview` choice, so
+// whatever was picked last is what the Media tab opens next time.
+// Escape is the one per-visit override, and it writes nothing.
 //
 // Class names and ids keep the 1.x xtag-grid-* vocabulary so the CSS and
 // the comments below stay one-to-one with the ancestor file.
@@ -157,16 +162,34 @@ const PREFILL_BEARER = "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRC"
   + "OuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 
 // The Media-tab default, shared with the popup's select: "photos" (X's
-// native grid), "mosaic", or "videos". Dropdown picks persist into the
-// same key, so the dropdown IS the control (user ask 2026-08-27).
+// native grid), "masonry", "mosaic", or "videos". Dropdown picks
+// persist into the same key, so the dropdown IS the control (user ask
+// 2026-08-27).
 const mediaView = watchChoice("mediaview", readMediaView);
 
+// The two grid flavors; everything but the layout pass is shared.
+// "masonry" is the shortest-column view, "mosaic" the justified rows
+// (readMediaView maps this branch's prerelease "mosaicwide" onto it).
+type GridMode = "masonry" | "mosaic";
+
+function isGridView(v: string): v is GridMode {
+  return v === "masonry" || v === "mosaic";
+}
+
 // The per-visit override. "feed" means "X's own view for now, whatever
-// the default" (Escape writes it, and it alone persists nothing);
-// "mosaic" bridges the beat between a dropdown pick and the storage
+// the default" (Escape writes it, and it alone persists nothing); a
+// mode value bridges the beat between a dropdown pick and the storage
 // cache echoing it back. evaluate() clears it when the reader leaves the
 // media surface, so every fresh visit starts from the stored default.
-let override: "mosaic" | "feed" | null = null;
+let override: GridMode | "feed" | null = null;
+
+// Which grid flavor is (or would be) on screen. The override outranks
+// the stored default for the visit, exactly as it does for shouldGrid.
+function gridMode(): GridMode {
+  if (override !== null && override !== "feed") return override;
+  const stored = mediaView();
+  return isGridView(stored) ? stored : "masonry";
+}
 // Whether the grid overlay is up RIGHT NOW. Any logic keyed on "the
 // reader scrolled down" must ask, because the driver walks the WINDOW
 // scroll behind the overlay. OUTSIDE this extension the contract is the
@@ -237,7 +260,7 @@ function shouldGrid(): boolean {
   // "need more" forever, so the overlay must deactivate, not just hide.)
   if (!onPhotosFeed()) return false;
   if (override === "feed") return false;
-  return override === "mosaic" || mediaView() === "mosaic";
+  return override !== null || isGridView(mediaView());
 }
 
 function selectedMediaTab(): HTMLAnchorElement | null {
@@ -258,7 +281,20 @@ function selectedMediaTab(): HTMLAnchorElement | null {
 // the menu logic below identifies the current-feed item by comparing item
 // text against the tab's label, and that comparison must keep using X's
 // own locale word, never our rename.
-const GRID_TAB_LABEL = "Mosaic";
+// One label per flavor: the tab names the view on screen, and a live
+// flavor switch renames it in place.
+const GRID_TAB_LABELS: Record<GridMode, string> = {
+  masonry: "Masonry", mosaic: "Mosaic",
+};
+
+function gridTabLabel(): string {
+  return GRID_TAB_LABELS[gridMode()];
+}
+
+function isGridTabLabel(text: string): boolean {
+  return text === GRID_TAB_LABELS.masonry || text === GRID_TAB_LABELS.mosaic;
+}
+
 let tabLabelWas: string | null = null;
 
 function tabTextOf(tab: HTMLElement): string {
@@ -268,7 +304,7 @@ function tabTextOf(tab: HTMLElement): string {
 // The tab's label as X wrote it (locale word), whether or not we renamed it.
 function tabOriginalLabel(tab: HTMLElement): string {
   const text = tabTextOf(tab);
-  return text === GRID_TAB_LABEL && tabLabelWas ? tabLabelWas : text;
+  return isGridTabLabel(text) && tabLabelWas ? tabLabelWas : text;
 }
 
 // Every media-path tab in the tablist, selected or not: the RESTORE half
@@ -306,18 +342,25 @@ function assertTabLabel(): void {
   // runs on every mutation batch across all of x.com.
   if (!active && tabLabelWas === null) return;
   if (active && onPhotosFeed()) {
+    // Not before the takeover: pre-claim the page is X's, mid-transition,
+    // and a text write into the strip React is rendering invalidates its
+    // work for a label the reader cannot see the grid behind yet.
+    if (!claimed) return;
     const tab = selectedMediaTab();
     if (!tab) return;
+    const wanted = gridTabLabel();
     setFirstTextNode(tab, (text) => {
-      if (text === GRID_TAB_LABEL) return null;
-      tabLabelWas = text;
-      return GRID_TAB_LABEL;
+      if (text === wanted) return null;
+      // Only X's own word may become the restore label; a stale flavor
+      // label of ours (a live Masonry/Mosaic switch) must not.
+      if (!isGridTabLabel(text)) tabLabelWas = text;
+      return wanted;
     });
     return;
   }
   for (const tab of allMediaTabs()) {
     setFirstTextNode(tab, (text) =>
-      text === GRID_TAB_LABEL && tabLabelWas ? tabLabelWas : null);
+      isGridTabLabel(text) && tabLabelWas ? tabLabelWas : null);
   }
 }
 
@@ -330,6 +373,18 @@ let statusEl: HTMLElement | null = null;
 // tail; so they continue the last partial row instead of starting a
 // detached block below a gap. Real tiles insert BEFORE this marker.
 let firstSkel: HTMLElement | null = null;
+// Whether the grid has taken the page over yet: the xtag-gridmode class
+// (which clips X's feed) and the scroll reset wait for the FIRST
+// successful placement instead of firing at activation (user report
+// 2026-08-27: "when i switch from another tab to mosaic the tabs
+// disappear for a sec"). At activation X is often still mid-transition,
+// with the tab strip unmounted; clipping the feed then, with the
+// overlay itself still hidden as unplaced, left the column showing
+// neither X's view nor ours for that beat. Until the claim, the page
+// stays X's own and the transition looks exactly like a native tab
+// switch; the clip, the scroll reset and the spacer sizing all start
+// together once there is something to cover.
+let claimed = false;
 // Whether the grid has "docked": the profile header has scrolled away and
 // the grid is now the scrolling surface. Before that the grid is anchored
 // IN the page (user ask 2026-08-14: banner, bio, buttons and tabs stay
@@ -340,6 +395,36 @@ let docked = false;
 function primaryColumn(): HTMLElement | null {
   const el = document.querySelector('[data-testid="primaryColumn"]');
   return el instanceof HTMLElement ? el : null;
+}
+
+// THE OVERLAY TRACKS X'S LAYOUT IN THE SAME FRAME (frame recorder on
+// /fuyu_mikan, 2026-08-27): at entry the overlay was placed while X's
+// header was still 42px short, X then finished rendering and the tab
+// strip moved down, and for one 250ms driver beat the opaque overlay
+// covered the strip's bottom 42px of 53; the reader watched the nav
+// bar "disappear for a sec" on every entry. The driver's beat is far
+// too slow to chase X's layout, so a ResizeObserver on the column
+// re-places the overlay the moment the column's size changes; it fires
+// after layout and before paint, so a corrected position is what
+// actually reaches the screen. (placeOverlay writes only the overlay,
+// on body, and the spacer, whose sizeSpacer is interval-gated; the
+// observer cannot feed itself.)
+let colResize: ResizeObserver | null = null;
+let observedCol: HTMLElement | null = null;
+
+function watchColumn(col: HTMLElement): void {
+  if (col === observedCol) return;
+  colResize ??= new ResizeObserver(() => {
+    if (active) placeOverlay();
+  });
+  colResize.disconnect();
+  colResize.observe(col);
+  observedCol = col;
+}
+
+function unwatchColumn(): void {
+  colResize?.disconnect();
+  observedCol = null;
 }
 
 // The profile's STICKY top bar (back arrow · name): the ancestor of
@@ -381,12 +466,39 @@ function placeOverlay(): void {
   // viewport width"; a viewport-filling skeleton grid flashed until X's
   // first real render (round 17, user report). Nothing measured, nothing
   // shown; the driver re-measures every beat and reveals when X does.
-  overlay.classList.toggle("xtag-grid-unplaced", !col || !tablist);
+  // Unplaced gates only the FIRST placement (pre-claim). After the
+  // takeover, X can remount the tab strip mid-transition (measured: a
+  // remove + re-add on every tab switch), and a beat landing in that
+  // gap used to hide the whole grid for a beat; the flicker report.
+  // With nodes missing mid-session the overlay keeps its last geometry
+  // instead; the next beat re-measures.
+  overlay.classList.toggle("xtag-grid-unplaced", (!col || !tablist) && !claimed);
   if (!col || !tablist) return;
+  // The deferred takeover (see `claimed`): X's column and tab bar are
+  // both here, so this is the first beat the overlay can actually
+  // paint. Clip BEFORE measuring; it changes the layout being read.
+  // The window is NOT scrolled: X restores its own per-tab scroll
+  // position during the transition, and a reset of ours here fought it
+  // (the reader watched the nav bar leave and come back). Wherever X
+  // lands the reader is where the grid comes up; syncScroll maps any
+  // window position onto the grid.
+  if (active && !claimed) {
+    claimed = true;
+    document.documentElement.classList.add("xtag-gridmode");
+    assertSpacer();
+  }
+  if (active) watchColumn(col);
   const rect = col.getBoundingClientRect();
   const bar = stickyBarBottom(col);
   const tabBottom = tablist.getBoundingClientRect().bottom;
-  docked = tabBottom <= bar;
+  // The scrollY term guards the dock against a HALF-MOUNTED tab strip:
+  // while X remounts the strip mid-transition its rect can measure near
+  // the viewport top for a frame, which read as "docked" at scroll 0
+  // and pinned the opaque overlay at the sticky bar, over the nav bar's
+  // real place; the disappearing-nav report. A true dock only exists
+  // past the header, so a window that has not even scrolled the sticky
+  // bar's height cannot be docked.
+  docked = tabBottom <= bar && window.scrollY > bar;
   overlay.classList.toggle("xtag-grid-docked", docked);
   // The round-7 undock reset is gone with the second scroller it belonged to:
   // syncScroll writes 0 the moment the grid is undocked, whatever brought the
@@ -456,9 +568,12 @@ function spacerHome(): HTMLElement | null {
 }
 
 // Re-asserted per batch: these nodes are React's, and a re-render drops what
-// it does not own.
+// it does not own. NOT BEFORE THE CLAIM: appending a foreign node into
+// the header React is actively re-rendering is mid-transition
+// interference for a spacer that is 0px tall and unmeasurable anyway
+// (sizeSpacer is claim-gated too).
 function assertSpacer(): void {
-  if (!spacer) return;
+  if (!spacer || !claimed) return;
   const home = spacerHome();
   if (home && spacer.parentElement !== home) home.appendChild(spacer);
 }
@@ -469,6 +584,37 @@ function assertSpacer(): void {
 // guard returns before it reads the document at all.
 function sizeSpacer(force: boolean): void {
   if (!spacer || !overlay || !active || borrowed) return;
+  // Before the takeover the document is X's own at its natural height;
+  // there is nothing of ours to size against (see `claimed`).
+  if (!claimed) return;
+  // Three guards ported back from 1.x page-scroll.ts (the port dropped
+  // them; the user's dead-scroll report 2026-08-27 is what they prevent).
+  // Each one returns BEFORE anything is recorded, so the next honest
+  // measurement is not a delta from a lie.
+  //
+  // 1. NOT WHILE THE SPACER IS OUT OF THE DOCUMENT. Its home is React's,
+  //    and a re-render drops it; the photo viewer's route can take the
+  //    whole column with it. A measurement taken then reads a document
+  //    height that does NOT include the spacer, so the delta comes out as
+  //    the spacer's own height and gets added a SECOND time (measured on
+  //    the 1.x fixture: 4174 -> 9248 -> 14322, the same 5074 every round
+  //    trip). assertSpacer puts it back on the next beat; there is
+  //    nothing worth measuring until it has.
+  if (!spacer.isConnected) return;
+  // 2. NOT WHILE THE PHOTO VIEWER IS UP, or a tile click is mid-flight
+  //    (the click is the earliest the route change can be known; waiting
+  //    for evaluate()'s mutation batch leaves a gap the ticker can land
+  //    in). Tiles keep arriving under the viewer (the interceptor mints
+  //    X's own pages whatever route we are on), so maxInner changes and
+  //    the guard below lets the measurement through, against a document
+  //    that belongs to the VIEWER, not to the grid. That re-cut is the
+  //    1.x round-25 bug: the reader came back thousands of pixels from
+  //    where they left.
+  if (navigating || onPhotoRoute()) return;
+  // 3. NOT WHILE NOTHING IS MEASURED. With the column or the tab bar
+  //    unmounted, dockScrollY() answers 0, and a delta computed from that
+  //    cuts the spacer against a document that is mid-rebuild.
+  if (overlay.classList.contains("xtag-grid-unplaced")) return;
   const now = Date.now();
   if (!force && now - lastSizedAt < SIZE_INTERVAL_MS) return;
   lastSizedAt = now;
@@ -501,6 +647,12 @@ function stopSizing(): void {
 // is the profile header scrolling away; everything above it is grid.
 function syncScroll(): void {
   if (!overlay || borrowed) return;
+  // The viewer's document is not the grid's: while the viewer is up (or a
+  // tile click is mid-flight) the window's scroll says nothing about the
+  // grid, and copying it in would scroll the hidden grid to wherever the
+  // viewer's short document clamps. Same freeze the sizing takes; the 1.x
+  // scroller's syncable() hook, inlined.
+  if (navigating || onPhotoRoute()) return;
   const target = docked ? Math.max(window.scrollY - dockScrollY(), 0) : 0;
   if (Math.abs(overlay.scrollTop - target) > 1) overlay.scrollTop = target;
 }
@@ -574,8 +726,40 @@ const COL_GAP_PX = 4;
 // (object-fit: cover); the viewer has the full image one click away.
 const RATIO_MIN = 0.5;
 const RATIO_MAX = 2.5;
+// LANDSCAPE TILES AND THE TWO MOSAIC MODES (both user asks 2026-08-27,
+// same day). A one-column cell scales a wide photo down by its own
+// ratio, so at 185px wide a 16:9 frame stands ~104px tall; the widest
+// art in the feed renders smallest. The first fix gave landscape tiles a
+// TWO-column cell, and the user rejected it on sight: the pair pick kept
+// re-choosing the same low pair, so the spanning tiles herded into the
+// left two columns while the singles drained into the third, and every
+// pair placement whose columns disagreed left a hole over the shorter
+// one. Do not bring the pair span back.
+//
+// So the choice is now the reader's, as two modes:
+//   MASONRY  every tile one column; the plain shortest-column masonry,
+//            exactly the pre-span layout.
+//   MOSAIC   anything wider than 4:3 takes the ENTIRE ROW at the grid's
+//            full width, and everything else flows into JUSTIFIED rows
+//            (see layoutWideRows). Was "Mosaic Wide" for one round; the
+//            rename is the user's 2026-08-27 naming ask.
+// 4:3 itself stays a single cell in both modes: at ~139px tall it never
+// read as tiny, and full-rowing it would turn a plain-photos profile
+// into a one-across feed.
+const SPAN_RATIO_MAX = 0.75;
+// The mosaic's row shape. Rows aim near the masonry's column width
+// scaled up a touch, so the two modes read as siblings; the cap bounds
+// the one stretch case (a partial row force-closed with a single tile
+// in it), where a lone square would otherwise become a grid-width
+// monolith taller than it is wide.
+const ROW_TARGET_FACTOR = 1.15;
+const ROW_MAX_FRACTION = 0.7;
 let layoutTimer = 0;
 let lastLayoutWidth = 0;
+// The flavor the last layout pass used: a dropdown or popup switch
+// between the two mosaic modes re-lays-out IN PLACE (evaluate compares
+// against this); the tiles, the driver and the cache all carry over.
+let laidOutMode: GridMode | null = null;
 
 function tileRatio(el: HTMLElement): number {
   const r = Number(el.dataset.xtagRatio);
@@ -591,13 +775,25 @@ function layoutMosaic(): void {
   const cols = Math.min(Math.max(
     Math.floor((width + COL_GAP_PX) / (COL_TARGET_PX + COL_GAP_PX)), 2), 5);
   const colW = (width - COL_GAP_PX * (cols - 1)) / cols;
+  // Skeletons lay out only while the loading tail shows; when exhausted
+  // they are display:none and must not hold any height.
+  const loading = overlay.classList.contains("xtag-grid-loading");
+  const children = (Array.from(gridEl.children) as HTMLElement[])
+    .filter((child) => loading || !child.classList.contains("xtag-skel"));
+  const justified = gridMode() === "mosaic";
+  laidOutMode = justified ? "mosaic" : "masonry";
+  const bottom = justified
+    ? layoutWideRows(children, width, colW, loading)
+    : layoutColumns(children, cols, colW);
+  gridEl.style.height = `${Math.ceil(bottom)}px`;
+}
+
+// The plain mosaic: shortest-column masonry, one column per tile.
+function layoutColumns(children: HTMLElement[], cols: number,
+                       colW: number): number {
   const tops = new Array<number>(cols).fill(0);
   let maxBottom = 0;
-  const loading = overlay.classList.contains("xtag-grid-loading");
-  for (const child of Array.from(gridEl.children) as HTMLElement[]) {
-    // Skeletons lay out only while the loading tail shows; when exhausted
-    // they are display:none and must not hold column height.
-    if (child.classList.contains("xtag-skel") && !loading) continue;
+  for (const child of children) {
     const h = Math.round(colW * tileRatio(child));
     // The SHORTEST column, ties to the leftmost: that is what keeps a run
     // of tiles reading left-to-right when the columns are level.
@@ -614,7 +810,100 @@ function layoutMosaic(): void {
     // top: a trailing gap would pad the scroll range for nothing.
     maxBottom = Math.max(maxBottom, tops[col] - COL_GAP_PX);
   }
-  gridEl.style.height = `${Math.ceil(maxBottom)}px`;
+  return maxBottom;
+}
+
+// The mosaic (justified rows), second cut (user report 2026-08-27: the
+// first cut "creates
+// pockets with empty spaces quite often", with the ask "no space is left
+// open ever without changing the ordering"). The first cut kept the
+// masonry columns and only full-rowed the landscapes; between two full
+// rows the singles filled columns left to right, so a band with fewer
+// singles than columns left its spare columns EMPTY (the screenshot: one
+// portrait beside two columns of nothing). With the ORDER fixed and the
+// column widths fixed, some band always comes up short; the only degree
+// of freedom left is the widths. So the wide mode is JUSTIFIED ROWS:
+// tiles flow into rows in feed order, and every closed row is scaled to
+// one shared height at which the widths, kept proportional to each
+// tile's aspect, fill the grid exactly. An ordinary row therefore crops
+// nothing at all. Wide tiles (ratio < SPAN_RATIO_MAX) still take a row
+// of their own at their exact ratio, which in a justified layout is just
+// a one-tile row. The two deliberate crop cases, both capped by
+// ROW_MAX_FRACTION so no tile becomes a grid-width monolith:
+//   - a partial row force-closed by an arriving wide tile stretches to
+//     fill rather than leaving the pocket this rewrite removes;
+//   - the FINAL row stretches only once the feed is exhausted. While
+//     loading it keeps natural sizes, so the one place a right-edge gap
+//     can show is under the skeleton shimmer that continues the row.
+// Skeletons never take a wide row of their own: a 400px shimmer slab
+// reads as a defect, not as loading.
+//
+// Row closure depends only on the tiles BEFORE the closing point, so an
+// appended page can never re-shape a closed row; the no-shift rule
+// holds exactly as it does for the masonry.
+function layoutWideRows(children: HTMLElement[], width: number,
+                        colW: number, loading: boolean): number {
+  const target = colW * ROW_TARGET_FACTOR;
+  const rowMax = width * ROW_MAX_FRACTION;
+  const aspectOf = (el: HTMLElement): number => 1 / tileRatio(el);
+  const naturalH = (tiles: HTMLElement[]): number => {
+    const gaps = COL_GAP_PX * (tiles.length - 1);
+    return (width - gaps) / tiles.reduce((s, el) => s + aspectOf(el), 0);
+  };
+  let y = 0;
+  let row: HTMLElement[] = [];
+  const place = (el: HTMLElement, x: number, w: number, h: number): void => {
+    el.style.width = `${w.toFixed(2)}px`;
+    el.style.height = `${Math.round(h)}px`;
+    el.style.left = `${x.toFixed(2)}px`;
+    el.style.top = `${y.toFixed(2)}px`;
+  };
+  const closeRow = (stretch: boolean): void => {
+    if (row.length === 0) return;
+    const h = stretch ? Math.min(naturalH(row), rowMax) : target;
+    const gaps = COL_GAP_PX * (row.length - 1);
+    const sumA = row.reduce((s, el) => s + aspectOf(el), 0);
+    let x = 0;
+    for (let i = 0; i < row.length; i++) {
+      // Stretched, the last tile absorbs the float remainder so the row's
+      // right edge lands on the grid's to the pixel.
+      const w = stretch
+        ? (i === row.length - 1
+          ? width - x
+          : (width - gaps) * (aspectOf(row[i]) / sumA))
+        : aspectOf(row[i]) * h;
+      place(row[i], x, w, h);
+      x += w + COL_GAP_PX;
+    }
+    y += Math.round(h) + COL_GAP_PX;
+    row = [];
+  };
+  for (const child of children) {
+    if (tileRatio(child) < SPAN_RATIO_MAX
+      && !child.classList.contains("xtag-skel")) {
+      closeRow(true);
+      const h = Math.round(width * tileRatio(child));
+      place(child, 0, width, h);
+      y += h + COL_GAP_PX;
+      continue;
+    }
+    row.push(child);
+    const h = naturalH(row);
+    if (h > target) continue;
+    // Close at the count nearer the target height: this row as it
+    // stands, or the same row without the newest tile, which then opens
+    // the next row.
+    const withoutLast = row.length > 1 ? naturalH(row.slice(0, -1)) : Infinity;
+    if (withoutLast - target < target - h) {
+      const carried = row.pop()!;
+      closeRow(true);
+      row.push(carried);
+    } else {
+      closeRow(true);
+    }
+  }
+  closeRow(!loading);
+  return Math.max(y - COL_GAP_PX, 0);
 }
 
 // Coalesce: a payload page mints ~20 tiles one mergeRun at a time, and a
@@ -721,6 +1010,23 @@ function buildOverlay(): void {
 // reads far better than a frame of feed.
 let holeRaf = 0;
 let holePath = "";
+// THE HOLE FADES WITH THE MENU (user report 2026-08-28: "the dropdown
+// flicker is still there", against the native menus as the reference).
+// Measured on the live menu: X opens its dropdowns with a pure OPACITY
+// fade; the panel's box is at full size from the first frame. The hole
+// used to be cut in one frame, so the reader saw tiles snap to black
+// and only then a menu fade in over the black; two stages where X's
+// own menus have one. Chrome interpolates same-structure path() values
+// in clip-path (verified with a seeked Web Animation; a transition on
+// a hidden tab shows nothing, which is what made this look
+// unsupported), so the hole now GROWS from a point at the panel's
+// center under a 150ms clip-path transition (content.css), in step
+// with the fade, and collapses shut the same way when the menu goes.
+const HOLE_MS = 150;
+let holeClearTimer = 0;
+// The last hole's center, in the overlay's own coordinates: the
+// collapse target when the menu disappears.
+let holeCenter: { x: number; y: number } | null = null;
 // Frames in a row that measured no hole. The loop below runs while a menu
 // node exists, so this is its stop: a node that never yields a panel is
 // not an open dropdown, and a per-frame measure must not outlive it. One
@@ -830,25 +1136,78 @@ function holeShape(o: DOMRect, x1: number, y1: number, x2: number, y2: number,
   return `path(evenodd, "${outer} ${hole}")`;
 }
 
-function setHole(path: string): void {
-  holeIdle = path === "" ? holeIdle + 1 : 0;
+// A near-zero hole at (x, y), in the same command structure as a real
+// one, so the clip-path transition can interpolate between them. The
+// epsilon size matters: a truly zero hole clamps its radius to 0 and
+// holeShape then emits the arc-free rectangle path, whose command list
+// does not match the rounded one, and non-matching paths do not
+// interpolate; the transition would snap.
+function collapsedHole(x: number, y: number): string {
+  if (!overlay) return "";
+  return holeShape(overlay.getBoundingClientRect(),
+    x - 0.01, y - 0.01, x + 0.01, y + 0.01, 0.01);
+}
+
+function setHole(path: string, center: { x: number; y: number } | null = null): void {
   if (!overlay || path === holePath) return;
+  window.clearTimeout(holeClearTimer);
+  holeClearTimer = 0;
+  if (path === "") {
+    // Collapse shut where the hole was, then drop the clip entirely
+    // once the transition has run; an overlay with no menu open must
+    // not keep a clip-path for the compositor to chew on.
+    holePath = "";
+    if (holeCenter) {
+      overlay.style.clipPath = collapsedHole(holeCenter.x, holeCenter.y);
+      const el = overlay;
+      holeClearTimer = window.setTimeout(() => {
+        if (overlay === el && holePath === "") el.style.clipPath = "";
+      }, HOLE_MS + 40);
+    } else {
+      overlay.style.clipPath = "";
+    }
+    return;
+  }
+  // Grow from nothing: a fresh hole seeds its collapsed shape first and
+  // flushes, so the transition has a start value in the same frame.
+  if (holePath === "" && center) {
+    overlay.style.clipPath = collapsedHole(center.x, center.y);
+    void overlay.offsetWidth;
+  }
   holePath = path;
   overlay.style.clipPath = path;
+  if (center) holeCenter = center;
 }
+
+// How long a mounted menu may measure EMPTY before the hole collapses.
+// React's rewrap swaps the items shortly after the menu opens, and for
+// a frame or two nothing measures; collapsing on that made the growing
+// hole pulse shut and regrow (recorded live: 21px, 0, then regrow).
+// Ten frames is far past any swap and far short of the reader noticing
+// a stale hole under a menu that truly emptied.
+const HOLE_EMPTY_GRACE = 10;
 
 function punchHole(): void {
   if (!overlay) return;
   if (!active || !onPhotosFeed()) {
+    holeIdle++;
     setHole("");
     return;
   }
   const o = overlay.getBoundingClientRect();
   const panel = menuPanel(o);
   if (!panel) {
-    setHole("");
+    holeIdle++;
+    // No menu node at all is a CLOSE: collapse now (the loop stops with
+    // the node gone, so a deferred collapse would strand the hole). A
+    // MOUNTED menu measuring empty is React swapping its items; hold
+    // through the grace instead.
+    if (!document.querySelector('[role="menu"]') || holeIdle > HOLE_EMPTY_GRACE) {
+      setHole("");
+    }
     return;
   }
+  holeIdle = 0;
   const m = panel.rect;
   // The overlapping part decides WHETHER to clip: a menu outside the
   // overlay's box (sidebar menus, the account switcher) overlaps nothing
@@ -864,8 +1223,12 @@ function punchHole(): void {
   // dropdown opens at the tab bar, so its top edge sits above the overlay;
   // and that rounding leaves a wedge of grid over the panel. Whatever falls
   // outside the overlay's own box paints nothing anyway.
-  setHole(holeShape(o, m.left - o.left, m.top - o.top,
-    m.right - o.left, m.bottom - o.top, panel.radius));
+  const x1 = m.left - o.left;
+  const y1 = m.top - o.top;
+  const x2 = m.right - o.left;
+  const y2 = m.bottom - o.top;
+  setHole(holeShape(o, x1, y1, x2, y2, panel.radius),
+    { x: (x1 + x2) / 2, y: (y1 + y2) / 2 });
 }
 
 // THE LOOP RUNS WHILE A MENU IS OPEN, not while a hole exists (round 22,
@@ -887,6 +1250,12 @@ function syncMenuHole(): void {
   if (holeRaf || !open()) return;
   const tick = (): void => {
     punchHole();
+    // The glue and the ✓s ride the same frames while a menu is open
+    // over the active grid ("the line is still there sometimes"): X
+    // re-renders menu items on hover, and a batch-driven re-glue can
+    // land a frame late; every write in assertMenuChecks is guarded,
+    // so a settled menu costs reads only.
+    assertMenuChecks();
     holeRaf = open() ? requestAnimationFrame(tick) : 0;
   };
   holeRaf = requestAnimationFrame(tick);
@@ -2259,9 +2628,10 @@ function activate(): void {
   spendStartedAt = Date.now();
   gridHandle = location.pathname.split("/")[1].toLowerCase();
   tiles.clear();
+  claimed = false;
   try {
-    document.documentElement.classList.add("xtag-gridmode");
-    window.scrollTo(0, 0);
+    // The gridmode clip and the scroll reset are NOT here any more; the
+    // first successful placeOverlay applies them (see `claimed`).
     buildOverlay();
   } catch (error) {
     // Whatever failed, never leave the page as a black hole: the class
@@ -2304,7 +2674,11 @@ function deactivate(restoreScroll = true): void {
   // collapsed document and then X re-measure a feed far taller than it was.
   // Going to the top first, while the feed is still clipped and there is
   // nothing to clamp against, is what X's own tab switch does anyway.
-  if (restoreScroll) window.scrollTo(0, 0);
+  // A grid that never claimed the page never moved it either; the
+  // reader's scroll on X's own view is not ours to reset.
+  if (restoreScroll && claimed) window.scrollTo(0, 0);
+  claimed = false;
+  unwatchColumn();
   spacer?.remove();
   spacer = null;
   spacerHeight = 0;
@@ -2316,9 +2690,13 @@ function deactivate(restoreScroll = true): void {
   window.clearTimeout(layoutTimer);
   layoutTimer = 0;
   lastLayoutWidth = 0;
+  laidOutMode = null;
   // The next activation builds a fresh overlay with no clip on it; a stale
   // path here would make setHole skip the first write to that new element.
   holePath = "";
+  holeCenter = null;
+  window.clearTimeout(holeClearTimer);
+  holeClearTimer = 0;
   document.documentElement.classList.remove("xtag-gridmode");
   // The tab goes back to X's own label ("Photos") the moment the grid is
   // no longer the view on screen.
@@ -2335,7 +2713,23 @@ function evaluate(): void {
   }
   if (shouldGrid()) {
     activate();
-    overlay?.classList.remove("xtag-grid-viewing");
+    if (overlay?.classList.contains("xtag-grid-viewing")) {
+      overlay.classList.remove("xtag-grid-viewing");
+      // BACK FROM THE VIEWER: X tore the column down and rebuilt it, so
+      // the document changed shape while the sizing was frozen. The next
+      // measurement starts fresh rather than adding a delta to a stale
+      // total; returnWindow's rule, for the same reason.
+      lastMaxInner = -1;
+    }
+    // A flavor switch on a live grid (dropdown pick or popup select):
+    // same tiles, new layout, one relayout; and the tab is renamed NOW,
+    // because a style-only relayout fires no childList mutation for the
+    // per-batch assert to ride. The spacer follows on its own clock,
+    // from the changed grid height.
+    if (active && laidOutMode !== null && laidOutMode !== gridMode()) {
+      scheduleLayout();
+      assertTabLabel();
+    }
   } else {
     deactivate(active);
     // The override is per-visit: anywhere that is neither the media view
@@ -2381,27 +2775,19 @@ function setItemText(item: HTMLElement, text: string): void {
   }
 }
 
-// The rate cost, said where the choice is made (user ask 2026-08-27): a
-// dim second line under the Mosaic item, appended to the same container
-// that holds the label (X's own two-line menu items use that shape). The
-// mosaic loads through the reader's photos-timeline budget; the driver's
-// floor keeps it from draining the bucket, but the cost belongs on the
-// label, not only in the status line once it bites.
-function appendRateNote(clone: HTMLElement): void {
-  const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT);
-  let node: Node | null = null;
-  while ((node = walker.nextNode())) {
-    if ((node.textContent ?? "").trim()) break;
-  }
-  let home = node?.parentElement?.parentElement ?? clone;
-  // The label can sit directly under the menuitem root; never let the
-  // walk land on an ancestor OUTSIDE the clone.
-  if (!clone.contains(home)) home = clone;
-  const note = document.createElement("div");
-  note.className = "xtag-menu-note";
-  note.textContent = "uses your account's rate limit";
-  home.appendChild(note);
-}
+// (The per-item rate note is GONE, 2026-08-27: with two injected items
+// the notes made four two-line rows overflow the panel X sizes for its
+// own two, and the bottom item clipped; user screenshot. The cost note
+// lives in the popup beside the select, and the status line still says
+// so the moment the floor bites.)
+
+// One menu item per grid flavor. The attribute VALUE is the mode, so
+// the click handler and the ✓ assert read the item itself; hasAttribute
+// callers (realMenuItems, openTile's filters) never care about the value.
+const GRID_MENU_ITEMS: { mode: GridMode; label: string }[] = [
+  { mode: "masonry", label: "Masonry" },
+  { mode: "mosaic", label: "Mosaic" },
+];
 
 function injectGridItem(menu: HTMLElement): void {
   if (menu.querySelector(`[${GRID_ITEM_ATTR}]`)) return;
@@ -2409,17 +2795,26 @@ function injectGridItem(menu: HTMLElement): void {
   const tab = selectedMediaTab();
   const tabText = tab ? tabOriginalLabel(tab) : "";
   const items = realMenuItems(menu);
-  // Clone the item WITHOUT the checkmark (the one not naming the current
-  // feed), so the copy carries no stale ✓.
-  const donor = items.find((item) => (item.textContent ?? "").trim() !== tabText)
+  // Clone the item WITH the checkmark when one is on screen: the copy
+  // then carries X's own ✓ (the blue svg, at X's size and place), and
+  // assertMenuChecks shows it on the chosen flavor and hides it on the
+  // other. The text-glyph "✓" this replaces read as foreign beside X's
+  // (user screenshot 2026-08-28). Visibility keeps the svg's layout
+  // slot, exactly how the real items' ✓ is handled one function down.
+  // The pair goes AFTER X's last item, and assertMenuChecks re-glues it
+  // there every batch (see the rewrap comment there).
+  const donor = items.find((item) => item.querySelector("svg"))
+    ?? items.find((item) => (item.textContent ?? "").trim() !== tabText)
     ?? items[1];
-  const clone = donor.cloneNode(true) as HTMLElement;
-  clone.setAttribute(GRID_ITEM_ATTR, "1");
-  clone.querySelectorAll("svg").forEach((svg) => svg.remove());
-  setItemText(clone, active ? "Mosaic ✓" : "Mosaic");
-  appendRateNote(clone);
-  clone.style.cursor = "pointer";
-  donor.insertAdjacentElement("afterend", clone);
+  let after: HTMLElement = items[items.length - 1];
+  for (const { mode, label } of GRID_MENU_ITEMS) {
+    const clone = donor.cloneNode(true) as HTMLElement;
+    clone.setAttribute(GRID_ITEM_ATTR, mode);
+    setItemText(clone, label);
+    clone.style.cursor = "pointer";
+    after.insertAdjacentElement("afterend", clone);
+    after = clone;
+  }
   assertMenuChecks();
 }
 
@@ -2432,17 +2827,63 @@ function injectGridItem(menu: HTMLElement): void {
 // label's re-assert problem one node over).
 function assertMenuChecks(): void {
   const menu = document.querySelector<HTMLElement>('[role="menu"]');
-  const clone = menu?.querySelector<HTMLElement>(`[${GRID_ITEM_ATTR}]`);
-  if (!menu || !clone) return;
-  // THE CLONE'S LABEL FOLLOWS `active`, re-asserted per batch (user
-  // report 2026-08-27: "no check next to it until i click out and click
-  // the tab again"). The text used to be written once at inject time,
-  // and a menu can outlive an activation change: picking Mosaic
-  // activates under the still-open menu (closeMenu missed today's
-  // backdrop until the clientWidth fix below), which left a live mosaic
-  // behind an item still reading plain "Mosaic", beside X's ✓s this
-  // very function had hidden.
-  setItemText(clone, active ? "Mosaic ✓" : "Mosaic");
+  if (!menu) return;
+  const clones = Array.from(
+    menu.querySelectorAll<HTMLElement>(`[${GRID_ITEM_ATTR}]`));
+  if (clones.length === 0) return;
+  // EACH CLONE'S LABEL FOLLOWS `active` AND THE MODE, re-asserted per
+  // batch (user report 2026-08-27: "no check next to it until i click
+  // out and click the tab again"). The text used to be written once at
+  // inject time, and a menu can outlive an activation change: picking
+  // Mosaic activates under the still-open menu (closeMenu missed
+  // today's backdrop until the clientWidth fix below), which left a
+  // live mosaic behind an item still reading plain "Mosaic", beside
+  // X's ✓s this very function had hidden. The ✓ sits on the flavor the
+  // grid is actually showing; picking the other flavor moves it.
+  for (const clone of clones) {
+    const entry = GRID_MENU_ITEMS.find(
+      (m) => m.mode === clone.getAttribute(GRID_ITEM_ATTR));
+    if (!entry) continue;
+    const chosen = active && gridMode() === entry.mode;
+    const check = clone.querySelector("svg");
+    if (check) {
+      // X's own glyph, shown only on the chosen flavor; write-on-change,
+      // this runs per frame while a menu is open.
+      const want = chosen ? "visible" : "hidden";
+      if (check.style.visibility !== want) check.style.visibility = want;
+      setItemText(clone, entry.label);
+    } else {
+      // No ✓ was on screen to clone from; the text glyph is the fallback.
+      setItemText(clone, chosen ? `${entry.label} ✓` : entry.label);
+    }
+  }
+  // THE CLONES STAY GLUED TO X'S OWN ITEMS (user screenshot 2026-08-27:
+  // a seam of bare panel opened between the two injected items, and in
+  // an earlier round the bottom item clipped). Shortly after the menu
+  // mounts, React re-renders it and REWRAPS its two items into a fresh
+  // container (measured live on /NASA: menu becomes [wrapper > Videos,
+  // Photos]); nodes it does not own are left OUTSIDE that wrapper,
+  // wherever reconciliation dropped them, beside whatever helper nodes
+  // X renders. Anchored to the last real item, inside the same parent,
+  // the pair sits flush in X's own flow (measured: four contiguous
+  // 44px rows, the menu's auto height following, stable across
+  // re-renders) and every stray X node lands outside it. Write-on-move:
+  // a node is touched only when it is not already in place.
+  const real = realMenuItems(menu);
+  const lastReal = real[real.length - 1];
+  if (lastReal?.parentElement) {
+    let anchor: HTMLElement = lastReal;
+    for (const entry of GRID_MENU_ITEMS) {
+      const clone = clones.find(
+        (c) => c.getAttribute(GRID_ITEM_ATTR) === entry.mode);
+      if (!clone) continue;
+      if (clone.parentElement !== anchor.parentElement
+        || clone.previousElementSibling !== anchor) {
+        anchor.insertAdjacentElement("afterend", clone);
+      }
+      anchor = clone;
+    }
+  }
   if (!active) return;
   const tab = selectedMediaTab();
   const tabText = tab ? tabOriginalLabel(tab) : "";
@@ -2509,9 +2950,11 @@ function onMenuClick(event: MouseEvent): void {
     event.stopPropagation();
     // The override answers NOW; the write makes it the default (the
     // storage echo lands a beat later and changes nothing the override
-    // has not already said).
-    override = "mosaic";
-    void chrome.storage.local.set({ mediaview: "mosaic" });
+    // has not already said). The item's attribute value IS the mode.
+    const picked = item.getAttribute(GRID_ITEM_ATTR) ?? "";
+    const mode: GridMode = isGridView(picked) ? picked : "masonry";
+    override = mode;
+    void chrome.storage.local.set({ mediaview: mode });
     if (onPhotosFeed()) {
       closeMenu();
       evaluate();
@@ -2663,10 +3106,16 @@ export function initMosaic(): void {
         node.querySelectorAll<HTMLElement>('[role="menu"]').forEach(injectGridItem);
       });
     }
-    // The tab wears "Mosaic" while the mosaic is the view on screen, X's ✓
-    // stays off the Photos item (React re-renders restore both, so
-    // re-assert per batch), and an open menu gets its clip-path hole
-    // (see punchHole).
+    // Placement rides every batch too, not just the driver's beat: a
+    // React commit that moves the tab bar lands here BEFORE the frame
+    // paints, so the overlay is corrected in the same frame (the
+    // ResizeObserver in watchColumn covers the size changes; this
+    // covers node swaps).
+    if (active) placeOverlay();
+    // The tab wears the flavor's name while the grid is the view on
+    // screen, X's ✓ stays off the Photos item (React re-renders restore
+    // both, so re-assert per batch), and an open menu gets its
+    // clip-path hole (see punchHole).
     assertTabLabel();
     assertMenuChecks();
     syncMenuHole();
