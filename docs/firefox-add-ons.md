@@ -44,9 +44,9 @@ and returns the `.xpi`.
 | Version | What happened |
 | --- | --- |
 | 2.0.1 | The first Firefox build. Same code as Chrome's 2.0.1. |
-| 2.1 | UNRELEASED, branch `feature/mosaic-grid`. Adds the Masonry and Mosaic views. |
+| 2.1.0 | Adds the Masonry and Mosaic views. |
 
-## The Masonry and Mosaic views (2.1, unreleased)
+## The Masonry and Mosaic views (from 2.1.0)
 
 `chrome-web-store.md` holds the full answer; this is what AMO asks
 differently.

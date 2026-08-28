@@ -9,7 +9,7 @@ and adds one it never had:
 - **Copy link first** in the share menu.
 - **Masonry and Mosaic**, optional Media tab views that show every photo
   at its own shape instead of a square crop. Off by default; they are the
-  one feature that spends your account's rate limit (see below).
+  one feature that loads pages itself (see below).
 
 No servers, no analytics, no tracking. One permission (`storage`), x.com only.
 
@@ -57,18 +57,17 @@ Both share one X feature flag.
 ### What Masonry and Mosaic cost
 
 Every other feature is a flag, a URL or a DOM change, and costs nothing.
-These two views are different: X's photo grid loads a page at a time, so
-a grid that runs ahead of you has to ask X for the next page. Those requests use
-your own session and come out of the same per-account budget X's own
-timelines draw on (measured at 50 requests per 15 minutes). Reading one
-profile of about 200 photos to the end costs 10 to 20 of them, so a few
-profiles in a row can empty it.
+These two views sometimes ask X for the next page of photos, the same
+request X's own page makes when you scroll. X allows each account about
+50 such requests per 15 minutes, shared with your normal browsing.
+Reading one profile of about 200 photos to the end takes 10 to 20 of
+them, so a few long profiles in a row can use most of the allowance.
 
-Three things keep that in hand. Most pages are free: the grid reads the
-responses X's own page already fetched, and only asks for a page when it
-has run out. It stops asking well before the budget is empty and tells you
-when loading resumes. Revisiting a profile paints from what it already
-holds instead of buying it again.
+Three things keep that small. Most pages are free: the views reuse the
+responses X's own page already fetched, and only ask when those run out.
+They stop asking well before the allowance is used up, and the view says
+when loading continues. Going back to a profile you already read shows
+the saved grid instead of loading it again.
 
 If you never pick Masonry or Mosaic, revertX makes no requests at all.
 

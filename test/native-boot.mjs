@@ -282,9 +282,8 @@ try {
   r = await readPage(page);
   check("E next boot: postgrid flipped, history not", r.attr && r.attr.likes === false && r.attr.postgrid === true && r.probe.carousel === false && r.probe.history === true && eq(r.probe.overrides, { [CAROUSEL]: false }), { attr: r.attr, probe: r.probe });
 
-  // F: migration from 1.x media choices, and from the prerelease
-  // "mosaicwide" the justified view was called for one round.
-  for (const [stored, want] of [[{ mediaview: "videos" }, false], [{ mediaphotos: false }, false], [{ mediaview: "grid" }, true], [{ mediaview: "mosaicwide" }, true], [{ mediaview: "masonry" }, true], [{}, true]]) {
+  // F: migration from 1.x and 2.0 media choices
+  for (const [stored, want] of [[{ mediaview: "videos" }, false], [{ mediaphotos: false }, false], [{ mediaview: "grid" }, true], [{ mediaview: "masonry" }, true], [{}, true]]) {
     await clearStorage(); await setStorage(stored); await resetMirror();
     await page.reload(); await settle(page);
     st = await storage(["mediagrid"]);

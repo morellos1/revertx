@@ -258,14 +258,14 @@
   }, true);
 
   // --- Media-timeline tap (mosaic.ts) --------------------------------------
-  // Ported from 1.x (feature/grid-page-scroll, round 13/14). The mosaic
-  // must not fetch pages of its own by default: replays spend the same
-  // per-user rate bucket as X's own feeds, and a few gridded profiles in a
-  // row emptied it (429s took the whole site down). So this wraps fetch and
-  // XHR in the PAGE's world and hands every photos-timeline response the
-  // page fetches anyway to the content script: zero extra requests.
-  // Payloads travel as a JSON string in a CustomEvent detail (strings cross
-  // the isolated-world boundary unambiguously in both engines).
+  // The grid must not fetch pages of its own by default: replays spend
+  // the same per-user rate bucket as X's own feeds, and a few gridded
+  // profiles in a row can empty it (429s take the whole site down). So
+  // this wraps fetch and XHR in the PAGE's world and hands every
+  // photos-timeline response the page fetches anyway to the content
+  // script: zero extra requests. Payloads travel as a JSON string in a
+  // CustomEvent detail (strings cross the isolated-world boundary
+  // unambiguously in both engines).
   //
   // The emit also carries x-rate-limit-remaining/reset (same-origin GraphQL,
   // headers readable) and fires on 429s too, body-less: the mosaic's driver
@@ -281,14 +281,14 @@
   // would poison the driver's rate floor.
   const PROFILE_RE = /\/i\/api\/graphql\/[^/]+\/UserByScreenName/;
 
-  // THE INIT RACE (found live on /echosluden, 2026-08-15): this script runs
-  // at document_start and X's first fetches land within ~1s, but the
-  // isolated-world listener registers at document_idle. On a full page load
-  // the earliest payloads (UserByScreenName above all, sometimes the page-1
-  // timeline too) dispatched into NOTHING and were lost, which starved the
-  // media_count end signal on exactly the small profiles that need it. So
-  // emissions QUEUE until the content script says it is listening (the
-  // xtag:media-listen handshake), then replay.
+  // The init race: this script runs at document_start and X's first
+  // fetches land within ~1s, but the isolated-world listener registers
+  // at document_idle. On a full page load the earliest payloads
+  // (UserByScreenName above all, sometimes the page-1 timeline too)
+  // would dispatch into nothing and be lost, which starves the
+  // media_count end signal on exactly the small profiles that need it.
+  // So emissions QUEUE until the content script says it is listening
+  // (the xtag:media-listen handshake), then replay.
   let listenerReady = false;
   const pendingPayloads: string[] = [];
   const PENDING_MAX = 20;
@@ -343,9 +343,8 @@
   };
 
   // A version marker page-context probes can read (fetch.toString() shows
-  // only the wrapper body, which barely changes between builds; this was
-  // the diagnosis gap when hunting the init race live). Bump when the
-  // tap's behavior changes.
+  // only the wrapper body, which barely changes between builds). Bump
+  // when the tap's behavior changes.
   try {
     (window.fetch as typeof window.fetch & { __xtagV?: number }).__xtagV = 5;
   } catch { /* marker only */ }

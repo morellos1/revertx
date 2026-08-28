@@ -1,38 +1,26 @@
-// THE MOSAIC (user ask 2026-08-27). X restored its native Photos grid at
-// /<handle>/media?filter=photo (uniform 194px tiles), which is what retired
-// the 1.x userland grid. This module brings the userland machinery back as
-// a DIFFERENT view: a masonry mosaic that shows every photo at its own
-// aspect ratio, columns balanced by height, Pinterest-style. The 1.x file
-// (branch feature/grid-page-scroll, src/content/media-grid.ts) is the
-// ancestor; every measured rule in it still stands unless a comment here
-// says otherwise.
+// The Masonry and Mosaic views: two optional Media-tab layouts that show
+// every photo at its own aspect ratio instead of X's square crop.
 //
-// How it works, unchanged from 1.x: an opaque overlay draws the tiles over
-// X's own media view, fed two ways. The MAIN-world interceptor hands over
-// every photos-timeline response the page fetches anyway (zero requests of
-// ours; each media entity carries original_info.width/height, which is what
-// the masonry lays out from). The harvest reads whatever cells X has
-// mounted as a fallback. Deep loading asks X for the next page by cursor,
-// behind the rate floor. A tile opens through X's own viewer (see openTile
-// and pushPhotoRoute) and closing the viewer lands back in the mosaic.
+// An opaque overlay draws the tiles over X's own media view, fed two
+// ways. The MAIN-world interceptor hands over every photos-timeline
+// response the page fetches anyway (no requests of ours; each media
+// entity carries original_info.width/height, which the layout reads).
+// The harvest reads whatever cells X has mounted as a fallback. Deep
+// loading asks X for the next page by cursor, behind the rate floor. A
+// tile opens through X's own viewer (see openTile and pushPhotoRoute)
+// and closing the viewer lands back in the grid.
 //
-// The mosaic rides ONE timeline: photos. X partitions media server-side,
-// so a mixed photo+video mosaic has no single source. Videos keep X's view.
+// The grid rides ONE timeline: photos. X partitions media server-side,
+// so a mixed photo+video grid has no single source. Videos keep X's view.
 //
 // X's media dropdown gets a third and a fourth option: Videos / Photos /
-// **Masonry** / **Mosaic** (items cloned from X's own, so they wear
-// their styling; renamed from Mosaic / Mosaic Wide 2026-08-27, user ask
-// for better names: Masonry is the standard word for the column layout,
-// and a mosaic is tiles fitted with no gaps, which is exactly the
-// justified view). The two modes share every mechanism here and differ
-// ONLY in the layout pass (layoutColumns vs layoutWideRows). A pick
-// PERSISTS (user ask 2026-08-27): the dropdown items and the popup's
-// "Media tab opens" select write the same `mediaview` choice, so
-// whatever was picked last is what the Media tab opens next time.
-// Escape is the one per-visit override, and it writes nothing.
-//
-// Class names and ids keep the 1.x xtag-grid-* vocabulary so the CSS and
-// the comments below stay one-to-one with the ancestor file.
+// Masonry / Mosaic (items cloned from X's own, so they wear X's own menu
+// styling). The two modes share every mechanism here and differ only in
+// the layout pass (layoutColumns vs layoutWideRows). A pick persists:
+// the dropdown items and the popup's "Media tab opens" select write the
+// same `mediaview` choice, so whatever was picked last is what the
+// Media tab opens next time. Escape is the one per-visit override, and
+// it writes nothing.
 import { pollFor } from "../core/poll";
 import { readMediaView, settingsReady, watchChoice } from "../core/settings";
 import { subscribeToMutations } from "./observer";
@@ -45,9 +33,8 @@ const MEDIA_PATH_RE = /^\/[A-Za-z0-9_]{1,15}\/media\/?$/;
 // alive (hidden under the viewer) instead of tearing it down, so closing
 // the viewer lands back in the grid exactly as it was.
 const PHOTO_ROUTE_RE = /^\/[A-Za-z0-9_]{1,15}\/status\/\d+\/photo\/\d+/i;
-// Quickened round 8 (user: smoother/faster): the render gate below is what
-// protects against outrunning X's renderer, so the fixed delays only cap
-// top speed on steps that actually yielded tiles.
+// The render gate below protects against outrunning X's renderer; these
+// fixed delays only cap top speed on steps that actually yielded tiles.
 const DRIVE_STEP_MS = 180;
 const IDLE_MS = 250;
 const POLL_MS = 100;
@@ -55,83 +42,70 @@ const POLL_MS = 100;
 // anyway. X mounts cell shells first and fills the media in later, so a
 // driver that steps on a fixed clock outruns the renderer and walks to the
 // end of the virtualizer's spacer with an empty grid (measured on a fresh
-// page load; the user's "grid doesn't work at all").
+// page load).
 const STEP_PATIENCE_MS = 1500;
-// At the BOTTOM of the document the patience shrinks (round 14): the
-// 1500ms window is sized for mid-feed rendering, and the end of the feed
-// used to sit behind FOUR of them; ~6s of skeleton shimmer after the
-// last real tile (user report). A premature end is soft: any later tile
-// clears `exhausted` and the tail returns.
+// At the bottom of the document the patience shrinks: the 1500ms window
+// is sized for mid-feed rendering, and four of them after the last real
+// tile is ~6s of skeleton shimmer. A premature end is soft: any later
+// tile clears `exhausted` and the tail returns.
 const BOTTOM_PATIENCE_MS = 700;
 const STALLS_FOR_END = 4;
-// Look-ahead: ~1.5 viewports (round 14, was a flat 3400px ≈ 4 viewports;
-// user call: fetch less far ahead). This also bounds the eager thumbnail
+// Look-ahead: ~1.5 viewports. This also bounds the eager thumbnail
 // fetches, and it is the knob that decides how much of the rate-limit
 // bucket a casual profile visit spends.
 function bufferPx(): number {
   return Math.max(Math.round(window.innerHeight * 1.5), 900);
 }
-// THE ROUND-6 SCROLL-FILL IS REMOVED (round 8, user: "i dont want any
-// shifting at all"; do not re-add it): a window-scroll prefill and the
-// no-shift rule are mutually exclusive by construction. The prefill is
-// PASSIVE since round 13: the MAIN-world interceptor hands over every
-// photos-timeline response the page fetches anyway (zero extra requests;
-// the round-9/11 active replays spent the user's own rate-limit bucket
-// and 429'd the whole site after a few gridded profiles). At most ONE
-// active replay page remains, only when the passive path came up short,
-// gated behind a cooldown after any 429.
+// There is no scroll-driven prefill, and none may be added: a
+// window-scroll prefill and the no-shift rule are mutually exclusive by
+// construction. The prefill is passive: the MAIN-world interceptor hands
+// over every photos-timeline response the page fetches anyway (zero
+// extra requests; active replays spend the user's own rate-limit bucket,
+// and a few gridded profiles' worth of them 429'd the whole site). At
+// most ONE active replay page remains, only when the passive path came
+// up short, gated behind a cooldown after any 429.
 const PREFILL_MIN_TILES = 15;
 const API_COOLDOWN_MS = 10 * 60_000;
-// One page size, SETTLED (measured on /NASA, one cold run per bucket,
-// 2026-08-18): count=100 and count=200 returned receipts identical to
-// each other in every field, so X clamps the ask, and both big runs
-// ended 100 photos EARLY on a 3x cursor echo while count=20 sailed past.
-// Do not rebuild the page-size ladder.
+// One page size, settled by measurement on /NASA: count=100 and
+// count=200 returned receipts identical in every field, so X clamps the
+// ask, and both big runs ended 100 photos early on a 3x cursor echo
+// while count=20 sailed past. Do not rebuild a page-size ladder.
 const PAGE_COUNT = 20;
-// A SHORT PAGE IS NOT THE END, and the rule that said it was (round 15's
-// SHORT_PAGE_MIN = 10) is REMOVED; do not bring it back. It read a page's
-// size as a position in the feed, and on the photos timeline those are
-// unrelated. Measured live on /NASA, 2026-08-17: X applies the photo filter
-// SERVER-side, so `count: 20` buys 20 items of the underlying media timeline
-// and returns only the photos among them. Consecutive pages came back with
-// 7, 12, 15, 10, **2**, 13 tweets; the 2 ended the grid at 49 photos, and
-// the very next page, fetched from the cursor that same page carried, held
-// 36 more. A page is small because the account posted videos there, not
-// because the timeline ran out. Re-measured after the fix: 532 photos, and
-// the sparse 2-tweet page went by unremarked on both paths.
+// A SHORT PAGE IS NOT THE END; do not add a minimum-page-size rule. X
+// applies the photo filter server-side: `count: 20` buys 20 items of the
+// underlying media timeline and returns only the photos among them, so
+// consecutive pages can carry 7, 12, 15, 10, 2, 13 tweets mid-feed
+// (measured live on /NASA). A page is small because the account posted
+// videos there, not because the timeline ran out.
 //
-// WHAT THE END ACTUALLY LOOKS LIKE; same session, /echosluden, the 1-photo
-// profile the round-15 rule was written for: X sends NO
-// TimelineTerminateTimeline at all, not on NASA's pages and not on that
-// profile's last content page. The end is the page AFTER the last one: 717
-// bytes of cursor-only entries whose Bottom cursor equals the cursor that
-// asked for it. That is the signal every path keys off now (applyPayload's
-// non-advancing-cursor check, and fetchMediaPage's for our own replays), and
-// it is what settled /echosluden in that run; the short-page rule never
-// fired there. It cost one page fetch at the true end, which X's own feed
-// makes anyway on an undocked profile, and which apiPrefill's single replay
-// already budgets for.
-// --- the rate-limit floor (round 14) ---------------------------------------
+// What the end actually looks like (measured live): X sends no
+// TimelineTerminateTimeline at all. The end is the page AFTER the last
+// one: a few hundred bytes of cursor-only entries whose Bottom cursor
+// equals the cursor that asked for it. That is the signal every path
+// keys off (applyPayload's non-advancing-cursor check, and
+// fetchMediaPage's for our own replays). It costs one page fetch at the
+// true end, which X's own feed makes anyway on an undocked profile.
+// --- the rate-limit floor --------------------------------------------------
 // Even fully passive, the driver makes X fetch pages at machine speed, and
-// the per-user bucket is SHARED with X's real feeds; draining it is what
-// "disabled the whole site" (user report). Every photos-timeline response
-// carries x-rate-limit-remaining/reset (the interceptor forwards them, and
-// our own replays read them directly); when remaining hits the floor the
-// driver STOPS asking for more and says when loading resumes, so the
+// the per-user bucket is SHARED with X's real feeds; draining it disables
+// the whole site. Every photos-timeline response carries
+// x-rate-limit-remaining/reset (the interceptor forwards them, and our
+// own replays read them directly); when remaining hits the floor the
+// driver stops asking for more and says when loading resumes, so the
 // reader's own timelines keep the rest of the budget.
 const RATE_FLOOR = 8;
 let rateRemaining: number | null = null;
 let rateResetAt = 0; // epoch ms
-// --- the spend meter (1.x round 25, ported lean: nothing persisted) --------
-// remaining/reset pace the driver, but nothing else could say what a
-// mosaic'd profile actually COSTS. X sends x-rate-limit-limit on every
+// --- the spend meter (nothing persisted) -----------------------------------
+// remaining/reset pace the driver; the counters say what a gridded
+// profile actually costs. X sends x-rate-limit-limit on every
 // photos-timeline response (the denominator); the counters split the
 // spend into the part that is ours (apiPrefill's replay, driveLoop's
 // cursor extensions) and the part X's own page fetched anyway (passive,
-// free). logSpend prints the receipt on every deactivate: read it before
-// theorizing about the bucket. FOUND vs ADDED is the whole diagnosis:
-// found counts every media item our pages carried, added what became a
-// tile, and a wide gap means we paid for photos already on screen.
+// free). logSpend prints the receipt on every deactivate. FOUND vs
+// ADDED is the diagnosis: found counts every media item our pages
+// carried, added what became a tile, and a wide gap means we paid for
+// photos already on screen.
 let rateLimit: number | null = null;
 let rateLow: number | null = null;
 let ownPages = 0;
@@ -139,12 +113,11 @@ let ownPhotos = 0;
 let ownAdded = 0;
 let passivePages = 0;
 let spendStartedAt = 0;
-// --- the per-handle grid cache (round 14) ----------------------------------
-// Leaving a profile and coming back used to re-fetch the whole grid from
-// scratch; back-and-forth browsing was a large share of the bucket burn.
-// Deactivation stashes the tiles + the deepest Bottom cursor; a revisit
-// paints instantly from the stash and only spends past the cached
-// frontier (see the cursor-extension step in driveLoop).
+// --- the per-handle grid cache ---------------------------------------------
+// Back-and-forth browsing must not re-buy the same pages. Deactivation
+// stashes the tiles + the deepest Bottom cursor; a revisit paints
+// instantly from the stash and only spends past the cached frontier
+// (see the cursor-extension step in driveLoop).
 interface CachedGrid {
   entries: { href: string; src: string; video: boolean; ratio?: number }[];
   cursor: string | null;
@@ -163,13 +136,11 @@ const PREFILL_BEARER = "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRC"
 
 // The Media-tab default, shared with the popup's select: "photos" (X's
 // native grid), "masonry", "mosaic", or "videos". Dropdown picks
-// persist into the same key, so the dropdown IS the control (user ask
-// 2026-08-27).
+// persist into the same key, so the dropdown IS the control.
 const mediaView = watchChoice("mediaview", readMediaView);
 
 // The two grid flavors; everything but the layout pass is shared.
-// "masonry" is the shortest-column view, "mosaic" the justified rows
-// (readMediaView maps this branch's prerelease "mosaicwide" onto it).
+// "masonry" is the shortest-column view, "mosaic" the justified rows.
 type GridMode = "masonry" | "mosaic";
 
 function isGridView(v: string): v is GridMode {
@@ -203,27 +174,21 @@ let gridHandle = "";
 // A tile click may be riding the feed's real photo anchor (scroll + click):
 // the driver must not fight over the window scroll meanwhile.
 let navigating = false;
-// True while OUR OWN code is clicking a real menu item (the Mosaic handler
+// True while OUR OWN code is clicking a real menu item (the grid handler
 // rides X's Photos item to reach the photos view). Without it that
 // synthetic click re-enters onMenuClick and reads as the user explicitly
-// choosing X's own view, which clears the pick and the mosaic never
-// comes up (the 1.x bug, one rename over).
+// choosing X's own view, which clears the pick and the grid never
+// comes up.
 let selfClicking = false;
 
 // The map is keyed by LOWERCASED href; the API's expanded_url and the
 // feed's own anchors can disagree on the handle's casing, and a case
 // difference must never mint the same photo twice.
 //
-// A TILE CARRIES NO ORDERING NUMBER (round 23; see mergeRun). It used to
-// carry a `key`, and that key meant two different things depending on where
-// the tile came from: a payload-minted tile got a running counter, while a
-// harvested tile got its feed cell's translateY times eight. Sorting one
-// against the other is meaningless, and harvest REWROTE a payload tile's
-// key in place when its cell mounted; so the grid's own children stopped
-// being sorted by the number the insert then searched them with. Both of
-// the user's 2026-08-16 reports came out of that (scrambled order, and a
-// 4-photo post whose first photo ended up somewhere else entirely). The
-// order now lives in exactly one place: the grid's DOM.
+// A tile carries no ordering number (see mergeRun). Numbering tiles from
+// two sources (a payload counter vs a feed cell's translateY) made the
+// sort meaningless and scrambled the grid. The order lives in exactly
+// one place: the grid's DOM.
 interface Tile {
   href: string;
   src: string;
@@ -253,11 +218,9 @@ function onPhotoRoute(): boolean {
 }
 
 function shouldGrid(): boolean {
-  // (The 1.x likes-hash standdown is gone with the hash: 2.0's restored
-  // Likes tab is a real /<handle>/likes path, so leaving for it fails the
-  // onPhotosFeed test like any other navigation. The lesson it taught
-  // stands: a driver behind a hidden overlay reads clientHeight 0 as
-  // "need more" forever, so the overlay must deactivate, not just hide.)
+  // Leaving the media surface must deactivate the overlay, not just hide
+  // it: a driver behind a hidden overlay reads clientHeight 0 as "need
+  // more" forever.
   if (!onPhotosFeed()) return false;
   if (override === "feed") return false;
   return override !== null || isGridView(mediaView());
@@ -273,14 +236,14 @@ function selectedMediaTab(): HTMLAnchorElement | null {
   return null;
 }
 
-// --- the tab wears the mosaic's name ---------------------------------------
-// While the mosaic is active the Media tab says "Photos" (1.x round 5 user
-// report); the underlying view's name, not the one on screen. The tab's
-// first text node is renamed to "Mosaic" and re-asserted every mutation
-// batch (React re-renders restore X's label), with the ORIGINAL label kept:
-// the menu logic below identifies the current-feed item by comparing item
-// text against the tab's label, and that comparison must keep using X's
-// own locale word, never our rename.
+// --- the tab wears the grid's name -----------------------------------------
+// While the grid is active X's Media tab would say "Photos": the
+// underlying view's name, not the one on screen. The tab's first text
+// node is renamed to the flavor's name and re-asserted every mutation
+// batch (React re-renders restore X's label), with the ORIGINAL label
+// kept: the menu logic below identifies the current-feed item by
+// comparing item text against the tab's label, and that comparison must
+// keep using X's own locale word, never our rename.
 // One label per flavor: the tab names the view on screen, and a live
 // flavor switch renames it in place.
 const GRID_TAB_LABELS: Record<GridMode, string> = {
@@ -333,10 +296,6 @@ function setFirstTextNode(root: HTMLElement,
   }
 }
 
-// (The 1.x drivingToGrid() early-rename is gone with the media-tab drive
-// itself: 2.0's interceptor steers a Media-tab click straight to
-// ?filter=photo, so there is no bare-/media stopover for the label to
-// flash on, and the mosaic never activates before a pick.)
 function assertTabLabel(): void {
   // Nothing renamed yet and nothing to rename: skip the tablist walk; this
   // runs on every mutation batch across all of x.com.
@@ -369,27 +328,24 @@ function assertTabLabel(): void {
 let overlay: HTMLElement | null = null;
 let gridEl: HTMLElement | null = null;
 let statusEl: HTMLElement | null = null;
-// The skeleton tiles live INSIDE the tile grid (round 12), always at its
-// tail; so they continue the last partial row instead of starting a
-// detached block below a gap. Real tiles insert BEFORE this marker.
+// The skeleton tiles live INSIDE the tile grid, always at its tail; so
+// they continue the last partial row instead of starting a detached
+// block below a gap. Real tiles insert BEFORE this marker.
 let firstSkel: HTMLElement | null = null;
 // Whether the grid has taken the page over yet: the xtag-gridmode class
 // (which clips X's feed) and the scroll reset wait for the FIRST
-// successful placement instead of firing at activation (user report
-// 2026-08-27: "when i switch from another tab to mosaic the tabs
-// disappear for a sec"). At activation X is often still mid-transition,
-// with the tab strip unmounted; clipping the feed then, with the
-// overlay itself still hidden as unplaced, left the column showing
-// neither X's view nor ours for that beat. Until the claim, the page
-// stays X's own and the transition looks exactly like a native tab
-// switch; the clip, the scroll reset and the spacer sizing all start
-// together once there is something to cover.
+// successful placement instead of firing at activation. At activation X
+// is often still mid-transition, with the tab strip unmounted; clipping
+// the feed then, with the overlay itself still hidden as unplaced,
+// leaves the column showing neither X's view nor ours for that beat.
+// Until the claim, the page stays X's own and the transition looks
+// exactly like a native tab switch; the clip, the scroll reset and the
+// spacer sizing all start together once there is something to cover.
 let claimed = false;
 // Whether the grid has "docked": the profile header has scrolled away and
 // the grid is now the scrolling surface. Before that the grid is anchored
-// IN the page (user ask 2026-08-14: banner, bio, buttons and tabs stay
-// visible and the page scrolls naturally, the grid riding along under the
-// tab bar).
+// IN the page: banner, bio, buttons and tabs stay visible, the page
+// scrolls naturally, and the grid rides along under the tab bar.
 let docked = false;
 
 function primaryColumn(): HTMLElement | null {
@@ -397,18 +353,15 @@ function primaryColumn(): HTMLElement | null {
   return el instanceof HTMLElement ? el : null;
 }
 
-// THE OVERLAY TRACKS X'S LAYOUT IN THE SAME FRAME (frame recorder on
-// /fuyu_mikan, 2026-08-27): at entry the overlay was placed while X's
-// header was still 42px short, X then finished rendering and the tab
-// strip moved down, and for one 250ms driver beat the opaque overlay
-// covered the strip's bottom 42px of 53; the reader watched the nav
-// bar "disappear for a sec" on every entry. The driver's beat is far
-// too slow to chase X's layout, so a ResizeObserver on the column
-// re-places the overlay the moment the column's size changes; it fires
-// after layout and before paint, so a corrected position is what
-// actually reaches the screen. (placeOverlay writes only the overlay,
-// on body, and the spacer, whose sizeSpacer is interval-gated; the
-// observer cannot feed itself.)
+// The overlay tracks X's layout in the same frame. At entry X can still
+// be rendering its header; when the tab strip then moves down, an
+// overlay placed on the driver's slow beat covers the strip for a
+// visible moment. So a ResizeObserver on the column re-places the
+// overlay the moment the column's size changes; it fires after layout
+// and before paint, so a corrected position is what actually reaches
+// the screen. (placeOverlay writes only the overlay, on body, and the
+// spacer, whose sizeSpacer is interval-gated; the observer cannot feed
+// itself.)
 let colResize: ResizeObserver | null = null;
 let observedCol: HTMLElement | null = null;
 
@@ -461,17 +414,16 @@ function placeOverlay(): void {
   if (!overlay) return;
   const col = primaryColumn();
   const tablist = col?.querySelector<HTMLElement>('[role="tablist"]');
-  // A FRESH LOAD has neither the column nor the tab bar yet, and the
+  // A fresh load has neither the column nor the tab bar yet, and the
   // fallback numbers (bar 53, tabBottom = bar) read as "docked, full
-  // viewport width"; a viewport-filling skeleton grid flashed until X's
-  // first real render (round 17, user report). Nothing measured, nothing
-  // shown; the driver re-measures every beat and reveals when X does.
-  // Unplaced gates only the FIRST placement (pre-claim). After the
-  // takeover, X can remount the tab strip mid-transition (measured: a
-  // remove + re-add on every tab switch), and a beat landing in that
-  // gap used to hide the whole grid for a beat; the flicker report.
-  // With nodes missing mid-session the overlay keeps its last geometry
-  // instead; the next beat re-measures.
+  // viewport width": a viewport-filling skeleton grid until X's first
+  // real render. Nothing measured, nothing shown; the driver re-measures
+  // every beat and reveals when X does. Unplaced gates only the FIRST
+  // placement (pre-claim). After the takeover, X can remount the tab
+  // strip mid-transition (measured: a remove + re-add on every tab
+  // switch), and hiding the grid for that gap reads as flicker; with
+  // nodes missing mid-session the overlay keeps its last geometry
+  // instead, and the next beat re-measures.
   overlay.classList.toggle("xtag-grid-unplaced", (!col || !tablist) && !claimed);
   if (!col || !tablist) return;
   // The deferred takeover (see `claimed`): X's column and tab bar are
@@ -491,19 +443,14 @@ function placeOverlay(): void {
   const rect = col.getBoundingClientRect();
   const bar = stickyBarBottom(col);
   const tabBottom = tablist.getBoundingClientRect().bottom;
-  // The scrollY term guards the dock against a HALF-MOUNTED tab strip:
+  // The scrollY term guards the dock against a half-mounted tab strip:
   // while X remounts the strip mid-transition its rect can measure near
-  // the viewport top for a frame, which read as "docked" at scroll 0
-  // and pinned the opaque overlay at the sticky bar, over the nav bar's
-  // real place; the disappearing-nav report. A true dock only exists
-  // past the header, so a window that has not even scrolled the sticky
-  // bar's height cannot be docked.
+  // the viewport top for a frame, which reads as "docked" at scroll 0
+  // and pins the opaque overlay over the nav bar's real place. A true
+  // dock only exists past the header, so a window that has not even
+  // scrolled the sticky bar's height cannot be docked.
   docked = tabBottom <= bar && window.scrollY > bar;
   overlay.classList.toggle("xtag-grid-docked", docked);
-  // The round-7 undock reset is gone with the second scroller it belonged to:
-  // syncScroll writes 0 the moment the grid is undocked, whatever brought the
-  // window back up, so there is no way to be left staring at a clipped middle
-  // of the grid any more.
   if (docked) {
     overlay.style.position = "fixed";
     overlay.style.top = `${bar}px`;
@@ -535,14 +482,13 @@ function dockScrollY(): number {
 }
 
 // --- the page is the scrollbar ---------------------------------------------
-// The design the Likes pane already uses, for the reason the reader gave for
-// wanting it here too: one global page scroll that moves the section, not an
-// inner scroll of its own. The overlay stays one viewport tall, so nothing
-// about its own layout changes; what changes is who drives it. A spacer in the
-// column gives the WINDOW the full height of the grid, the feed underneath is
+// One global page scroll moves the grid; the grid has no inner scroll of
+// its own. The overlay stays one viewport tall, so nothing about its own
+// layout changes; what changes is who drives it. A spacer in the column
+// gives the WINDOW the full height of the grid, the feed underneath is
 // clipped so the spacer is the only thing holding that height, and the
-// window's scroll is copied in; so the reader scrolls the page, the profile
-// header scrolls away, and the tiles follow.
+// window's scroll is copied in; so the reader scrolls the page, the
+// profile header scrolls away, and the tiles follow.
 const SPACER_ID = "xtag-grid-spacer";
 const SIZE_INTERVAL_MS = 250;
 let spacer: HTMLDivElement | null = null;
@@ -551,10 +497,10 @@ let lastMaxInner = -1;
 let lastSizedAt = 0;
 let sizeTimer = 0;
 
-// A narrower place than it looks: X's sticky name bar stays pinned only while
-// its CONTAINING BLOCK is on screen, and that block is not the primary column
-//; measured for the Likes pane, on this same column and this same bar. The
-// bar's own parent is the node whose height is the bar's range, so the height
+// A narrower place than it looks: X's sticky name bar stays pinned only
+// while its CONTAINING BLOCK is on screen, and that block is not the
+// primary column (measured on this same column and bar). The bar's own
+// parent is the node whose height is the bar's range, so the height
 // goes there.
 function spacerHome(): HTMLElement | null {
   const col = primaryColumn();
@@ -587,31 +533,27 @@ function sizeSpacer(force: boolean): void {
   // Before the takeover the document is X's own at its natural height;
   // there is nothing of ours to size against (see `claimed`).
   if (!claimed) return;
-  // Three guards ported back from 1.x page-scroll.ts (the port dropped
-  // them; the user's dead-scroll report 2026-08-27 is what they prevent).
-  // Each one returns BEFORE anything is recorded, so the next honest
-  // measurement is not a delta from a lie.
+  // Three guards, each returning BEFORE anything is recorded, so the
+  // next honest measurement is not a delta from a lie.
   //
-  // 1. NOT WHILE THE SPACER IS OUT OF THE DOCUMENT. Its home is React's,
+  // 1. Not while the spacer is out of the document. Its home is React's,
   //    and a re-render drops it; the photo viewer's route can take the
   //    whole column with it. A measurement taken then reads a document
-  //    height that does NOT include the spacer, so the delta comes out as
-  //    the spacer's own height and gets added a SECOND time (measured on
-  //    the 1.x fixture: 4174 -> 9248 -> 14322, the same 5074 every round
-  //    trip). assertSpacer puts it back on the next beat; there is
+  //    height that does NOT include the spacer, so the delta comes out
+  //    as the spacer's own height and gets added a second time, every
+  //    round trip. assertSpacer puts it back on the next beat; there is
   //    nothing worth measuring until it has.
   if (!spacer.isConnected) return;
-  // 2. NOT WHILE THE PHOTO VIEWER IS UP, or a tile click is mid-flight
+  // 2. Not while the photo viewer is up, or a tile click is mid-flight
   //    (the click is the earliest the route change can be known; waiting
   //    for evaluate()'s mutation batch leaves a gap the ticker can land
   //    in). Tiles keep arriving under the viewer (the interceptor mints
   //    X's own pages whatever route we are on), so maxInner changes and
   //    the guard below lets the measurement through, against a document
-  //    that belongs to the VIEWER, not to the grid. That re-cut is the
-  //    1.x round-25 bug: the reader came back thousands of pixels from
-  //    where they left.
+  //    that belongs to the VIEWER, not to the grid; the reader would
+  //    come back far from where they left.
   if (navigating || onPhotoRoute()) return;
-  // 3. NOT WHILE NOTHING IS MEASURED. With the column or the tab bar
+  // 3. Not while nothing is measured. With the column or the tab bar
   //    unmounted, dockScrollY() answers 0, and a delta computed from that
   //    cuts the spacer against a document that is mid-rebuild.
   if (overlay.classList.contains("xtag-grid-unplaced")) return;
@@ -628,11 +570,12 @@ function sizeSpacer(force: boolean): void {
   spacer.style.height = `${Math.round(spacerHeight)}px`;
 }
 
-// THE SIZING NEEDS A CLOCK OF ITS OWN. Every other call site hangs off the
-// outer document; a scroll, a resize, a mutation batch; and the thing that
-// changes the wanted height is the GRID growing, which arrives from a fetch
-// and touches none of them. A reader sitting still while a page landed would
-// have had nowhere to scroll to.
+// The sizing needs a clock of its own. Every other call site hangs off
+// the outer document (a scroll, a resize, a mutation batch), and the
+// thing that changes the wanted height is the GRID growing, which
+// arrives from a fetch and touches none of them. Without the clock, a
+// reader sitting still while a page landed would have nowhere to
+// scroll to.
 function startSizing(): void {
   if (sizeTimer) return;
   sizeTimer = window.setInterval(() => sizeSpacer(false), SIZE_INTERVAL_MS);
@@ -650,8 +593,7 @@ function syncScroll(): void {
   // The viewer's document is not the grid's: while the viewer is up (or a
   // tile click is mid-flight) the window's scroll says nothing about the
   // grid, and copying it in would scroll the hidden grid to wherever the
-  // viewer's short document clamps. Same freeze the sizing takes; the 1.x
-  // scroller's syncable() hook, inlined.
+  // viewer's short document clamps. Same freeze the sizing takes.
   if (navigating || onPhotoRoute()) return;
   const target = docked ? Math.max(window.scrollY - dockScrollY(), 0) : 0;
   if (Math.abs(overlay.scrollTop - target) > 1) overlay.scrollTop = target;
@@ -694,8 +636,7 @@ function setStatus(text: string): void {
 
 // X's theme is chosen IN-APP (default / dim / lights-out), not through the
 // OS, so prefers-color-scheme says nothing useful here; read the painted
-// background's luminance instead (1.x theme.ts, inlined: nothing else in
-// 2.0 needs it).
+// background's luminance instead.
 function isLightTheme(): boolean {
   const rgb = getComputedStyle(document.body).backgroundColor.match(/\d+/g);
   if (!rgb) return false;
@@ -704,16 +645,15 @@ function isLightTheme(): boolean {
 }
 
 // --- the masonry layout -----------------------------------------------------
-// What makes this view a mosaic and not the 1.x uniform grid. Native CSS
-// masonry is still behind flags in every browser this runs in, and CSS
-// columns order tiles column-major (top to bottom, then the next column),
-// which scrambles a timeline; so the layout is ~50 lines of JS: walk the
-// grid's children IN DOM ORDER (mergeRun already keeps that order correct;
-// the order lives in exactly one place, same as 1.x) and drop each tile
-// into the SHORTEST column. That keeps rough feed order row-wise, appends
-// page after page without ever moving a placed tile, and needs nothing but
-// each tile's aspect ratio; which the payloads carry as
-// original_info.width/height before any image loads (the no-shift rule).
+// Native CSS masonry is still behind flags in every browser this runs
+// in, and CSS columns order tiles column-major (top to bottom, then the
+// next column), which scrambles a timeline; so the layout is ~50 lines
+// of JS: walk the grid's children IN DOM ORDER (mergeRun keeps that
+// order correct) and drop each tile into the SHORTEST column. That
+// keeps rough feed order row-wise, appends page after page without ever
+// moving a placed tile, and needs nothing but each tile's aspect ratio,
+// which the payloads carry as original_info.width/height before any
+// image loads (the no-shift rule).
 //
 // Tiles are position:absolute inside .xtag-grid-tiles; the pass writes
 // left/top/width/height inline and gives the container its explicit
@@ -726,25 +666,21 @@ const COL_GAP_PX = 4;
 // (object-fit: cover); the viewer has the full image one click away.
 const RATIO_MIN = 0.5;
 const RATIO_MAX = 2.5;
-// LANDSCAPE TILES AND THE TWO MOSAIC MODES (both user asks 2026-08-27,
-// same day). A one-column cell scales a wide photo down by its own
+// Landscape tiles: a one-column cell scales a wide photo down by its own
 // ratio, so at 185px wide a 16:9 frame stands ~104px tall; the widest
-// art in the feed renders smallest. The first fix gave landscape tiles a
-// TWO-column cell, and the user rejected it on sight: the pair pick kept
-// re-choosing the same low pair, so the spanning tiles herded into the
-// left two columns while the singles drained into the third, and every
-// pair placement whose columns disagreed left a hole over the shorter
-// one. Do not bring the pair span back.
+// art in the feed renders smallest. A two-column pair span is NOT the
+// fix and must not come back: the pair pick keeps re-choosing the same
+// low pair, so spanning tiles herd left while singles drain right, and
+// every pair placement whose columns disagree leaves a hole over the
+// shorter one.
 //
-// So the choice is now the reader's, as two modes:
-//   MASONRY  every tile one column; the plain shortest-column masonry,
-//            exactly the pre-span layout.
+// So the choice is the reader's, as two modes:
+//   MASONRY  every tile one column; the plain shortest-column masonry.
 //   MOSAIC   anything wider than 4:3 takes the ENTIRE ROW at the grid's
 //            full width, and everything else flows into JUSTIFIED rows
-//            (see layoutWideRows). Was "Mosaic Wide" for one round; the
-//            rename is the user's 2026-08-27 naming ask.
+//            (see layoutWideRows).
 // 4:3 itself stays a single cell in both modes: at ~139px tall it never
-// read as tiny, and full-rowing it would turn a plain-photos profile
+// reads as tiny, and full-rowing it would turn a plain-photos profile
 // into a one-across feed.
 const SPAN_RATIO_MAX = 0.75;
 // The mosaic's row shape. Rows aim near the masonry's column width
@@ -813,25 +749,21 @@ function layoutColumns(children: HTMLElement[], cols: number,
   return maxBottom;
 }
 
-// The mosaic (justified rows), second cut (user report 2026-08-27: the
-// first cut "creates
-// pockets with empty spaces quite often", with the ask "no space is left
-// open ever without changing the ordering"). The first cut kept the
-// masonry columns and only full-rowed the landscapes; between two full
-// rows the singles filled columns left to right, so a band with fewer
-// singles than columns left its spare columns EMPTY (the screenshot: one
-// portrait beside two columns of nothing). With the ORDER fixed and the
-// column widths fixed, some band always comes up short; the only degree
-// of freedom left is the widths. So the wide mode is JUSTIFIED ROWS:
-// tiles flow into rows in feed order, and every closed row is scaled to
-// one shared height at which the widths, kept proportional to each
-// tile's aspect, fill the grid exactly. An ordinary row therefore crops
+// The mosaic (justified rows). Keeping masonry columns and full-rowing
+// only the landscapes leaves pockets: between two full rows the singles
+// fill columns left to right, so a band with fewer singles than columns
+// leaves its spare columns empty. With the order fixed and the column
+// widths fixed, some band always comes up short; the only degree of
+// freedom left is the widths. So the wide mode is JUSTIFIED ROWS: tiles
+// flow into rows in feed order, and every closed row is scaled to one
+// shared height at which the widths, kept proportional to each tile's
+// aspect, fill the grid exactly. An ordinary row therefore crops
 // nothing at all. Wide tiles (ratio < SPAN_RATIO_MAX) still take a row
 // of their own at their exact ratio, which in a justified layout is just
 // a one-tile row. The two deliberate crop cases, both capped by
 // ROW_MAX_FRACTION so no tile becomes a grid-width monolith:
 //   - a partial row force-closed by an arriving wide tile stretches to
-//     fill rather than leaving the pocket this rewrite removes;
+//     fill rather than leaving a pocket;
 //   - the FINAL row stretches only once the feed is exhausted. While
 //     loading it keeps natural sizes, so the one place a right-edge gap
 //     can show is under the skeleton shimmer that continues the row.
@@ -928,10 +860,9 @@ function buildOverlay(): void {
   gridEl.className = "xtag-grid-tiles";
   statusEl = document.createElement("div");
   statusEl.className = "xtag-grid-status";
-  // The loading tail: shimmer skeleton tiles while more can still arrive
-  // (round 4; replaces the "loading…" text as the loading signal). They
-  // are CHILDREN OF THE TILE GRID (round 12): a separate skeleton grid
-  // left the last partial row of real tiles hanging beside empty cells
+  // The loading tail: shimmer skeleton tiles while more can still
+  // arrive. They are CHILDREN of the tile grid: a separate skeleton grid
+  // leaves the last partial row of real tiles hanging beside empty cells
   // with the skeletons in a detached block below. mergeRun keeps real
   // tiles before firstSkel.
   // Varied heights, fixed pattern: the tail should read as a mosaic still
@@ -945,18 +876,11 @@ function buildOverlay(): void {
     gridEl.appendChild(skel);
     if (!firstSkel) firstSkel = skel;
   }
-  // No switcher strip of our own (user call 2026-08-14, round 3): the grid
-  // is page content; scroll up to the real tab bar and use X's own
-  // dropdown, which carries the injected Grid item.
+  // No switcher strip of our own: the grid is page content; scroll up to
+  // the real tab bar and use X's own dropdown, which carries the
+  // injected items.
   overlay.append(gridEl, statusEl);
   overlay.classList.add("xtag-grid-loading");
-  // The round-20 edge-wheel control and the top-snap that used to live here
-  // are both gone, and so is the hidden window scroll they refereed. There is
-  // one scroller now: the page's. A wheel anywhere over the grid moves the
-  // window, the window moves the grid, and reaching either end is just the end
-  // of the page; no chaining to swallow, no covered feed to protect, and no
-  // thousands of pixels of nothing between the reader and the header coming
-  // back.
   // While a dropdown is open through the clip-path hole (see punchHole), a
   // click anywhere else on the grid means click-off: X's own full-viewport
   // backdrop sits UNDER the overlay and can never see it, so forward the
@@ -968,60 +892,52 @@ function buildOverlay(): void {
     event.stopPropagation();
     closeMenu();
   }, true);
-  // ON document.body, NOWHERE ELSE. Two failed designs are buried here:
-  // insertBefore(document.body, layers) threw on fresh loads (#layers is
-  // not a body child there; the black-hole report), and inserting into
-  // layers' own parent put the overlay in REACT-OWNED territory, where the
-  // next reconciliation of that parent silently discarded it while the
-  // driver kept scrolling the page (the ghost-scroll report). React never
-  // manages body's other children, so body is the one safe parent; the
-  // z-index in content.css is what keeps the overlay above the feed.
+  // On document.body, nowhere else. insertBefore(document.body, layers)
+  // throws on fresh loads (#layers is not a body child there), and any
+  // parent inside #react-root is React-owned territory, where the next
+  // reconciliation silently discards the overlay while the driver keeps
+  // scrolling the page. React never manages body's other children, so
+  // body is the one safe parent; the z-index in content.css is what
+  // keeps the overlay above the feed.
   document.body.appendChild(overlay);
   placeOverlay();
 }
 
 // --- the menu hole ---------------------------------------------------------
-// While one of X's dropdowns is open over the active grid, the grid used to
-// step ASIDE entirely (visibility: hidden, the old xtag-grid-peek); which
-// read as the view switching to the photos feed (round 5 user report). The
-// menu still can never paint ABOVE a body-level overlay (#layers is a z:1
-// context nested inside react-root's z:0; measured), so instead the
-// overlay clips a HOLE where the menu is: clip-path's evenodd polygon keeps
-// the grid painted everywhere else, and a clipped-away region neither
-// paints nor hit-tests, so the menu shows through and takes its own clicks.
-// Re-measured per frame while open; X's menus animate in, so the rect
-// moves without any DOM mutation to observe.
+// A menu can never paint ABOVE a body-level overlay (#layers is a z:1
+// context nested inside react-root's z:0; measured), and hiding the
+// whole grid for an open dropdown reads as a view switch. So the
+// overlay clips a HOLE where the menu is: clip-path's evenodd polygon
+// keeps the grid painted everywhere else, and a clipped-away region
+// neither paints nor hit-tests, so the menu shows through and takes its
+// own clicks. Re-measured per frame while open; X's menus animate in,
+// so the rect moves without any DOM mutation to observe.
 //
-// THE HOLE IS CUT TO THE SHEET, NOT TO [role=menu] (round 22, user report
-// 2026-08-16: "clicking the dropdown from the grid view it looks kind of
-// messed up u can see artifacts behind it"). Two leaks, same cause; the
-// hole was bigger than the thing it exposes, and everything it exposed
-// beyond the menu was the photos feed:
+// The hole is cut to the SHEET, not to [role=menu]. A hole bigger than
+// the panel it exposes uncovers the photos feed, two ways:
 //   1. X's [role=menu] node is a positioned LAYER, and its box is not the
 //      panel the reader sees; it can be taller, wider, or the whole
 //      viewport, and a padded rect around that clips away most of the grid.
 //   2. The panel's corners are ROUNDED, so even an exact rectangle leaves
-//      four triangles of feed at the corners; the old 10px pad added a band
-//      of it all the way around.
-// The fix measures the element that actually PAINTS the panel (the nearest
-// background-painting ancestor of the items), takes its own border-radius,
-// and cuts a rounded hole of exactly that size. The panel's drop shadow
-// falls outside and stays covered; a lost shadow is the price, and it
-// reads far better than a frame of feed.
+//      four triangles of feed at the corners, and any padding adds a
+//      band of it all the way around.
+// So the hole measures the element that actually PAINTS the panel (the
+// nearest background-painting ancestor of the items), takes its own
+// border-radius, and is cut to exactly that size. The panel's drop
+// shadow falls outside and stays covered; a lost shadow is the price,
+// and it reads far better than a frame of feed.
 let holeRaf = 0;
 let holePath = "";
-// THE HOLE FADES WITH THE MENU (user report 2026-08-28: "the dropdown
-// flicker is still there", against the native menus as the reference).
-// Measured on the live menu: X opens its dropdowns with a pure OPACITY
-// fade; the panel's box is at full size from the first frame. The hole
-// used to be cut in one frame, so the reader saw tiles snap to black
-// and only then a menu fade in over the black; two stages where X's
-// own menus have one. Chrome interpolates same-structure path() values
-// in clip-path (verified with a seeked Web Animation; a transition on
-// a hidden tab shows nothing, which is what made this look
-// unsupported), so the hole now GROWS from a point at the panel's
-// center under a 150ms clip-path transition (content.css), in step
-// with the fade, and collapses shut the same way when the menu goes.
+// The hole fades with the menu. Measured on the live menu: X opens its
+// dropdowns with a pure OPACITY fade; the panel's box is at full size
+// from the first frame. A hole cut in one frame shows tiles snapping to
+// black and only then a menu fading in over the black; two stages where
+// X's own menus have one. Chrome interpolates same-structure path()
+// values in clip-path (verified with a seeked Web Animation; a
+// transition on a hidden tab shows nothing), so the hole GROWS from a
+// point at the panel's center under a 150ms clip-path transition
+// (content.css), in step with the fade, and collapses shut the same
+// way when the menu goes.
 const HOLE_MS = 150;
 let holeClearTimer = 0;
 // The last hole's center, in the overlay's own coordinates: the
@@ -1181,10 +1097,10 @@ function setHole(path: string, center: { x: number; y: number } | null = null): 
 
 // How long a mounted menu may measure EMPTY before the hole collapses.
 // React's rewrap swaps the items shortly after the menu opens, and for
-// a frame or two nothing measures; collapsing on that made the growing
-// hole pulse shut and regrow (recorded live: 21px, 0, then regrow).
-// Ten frames is far past any swap and far short of the reader noticing
-// a stale hole under a menu that truly emptied.
+// a frame or two nothing measures; collapsing on that makes the growing
+// hole pulse shut and regrow. Ten frames is far past any swap and far
+// short of the reader noticing a stale hole under a menu that truly
+// emptied.
 const HOLE_EMPTY_GRACE = 10;
 
 function punchHole(): void {
@@ -1231,14 +1147,13 @@ function punchHole(): void {
     { x: (x1 + x2) / 2, y: (y1 + y2) / 2 });
 }
 
-// THE LOOP RUNS WHILE A MENU IS OPEN, not while a hole exists (round 22,
-// user report: "the dropdown is like completely hidden until i scroll").
-// X's dropdown animates in, and mid-animation its items measure 0x0; so
-// the first punch after the menu mounts finds nothing to cut. Keyed on the
-// hole, the loop then never started, and the menu stayed buried under the
-// grid until the next mutation batch (a scroll) happened to punch again.
-// Keyed on the menu, the next frame measures the finished panel and the
-// hole opens on its own.
+// The loop runs while a MENU is open, not while a hole exists. X's
+// dropdown animates in, and mid-animation its items measure 0x0; so the
+// first punch after the menu mounts finds nothing to cut. Keyed on the
+// hole, the loop never starts, and the menu stays buried under the grid
+// until the next mutation batch happens to punch again. Keyed on the
+// menu, the next frame measures the finished panel and the hole opens
+// on its own.
 function syncMenuHole(): void {
   // A mutation batch with no loop running is a fresh look at the page: give
   // the next menu its full patience again.
@@ -1251,10 +1166,9 @@ function syncMenuHole(): void {
   const tick = (): void => {
     punchHole();
     // The glue and the ✓s ride the same frames while a menu is open
-    // over the active grid ("the line is still there sometimes"): X
-    // re-renders menu items on hover, and a batch-driven re-glue can
-    // land a frame late; every write in assertMenuChecks is guarded,
-    // so a settled menu costs reads only.
+    // over the active grid: X re-renders menu items on hover, and a
+    // batch-driven re-glue can land a frame late. Every write in
+    // assertMenuChecks is guarded, so a settled menu costs reads only.
     assertMenuChecks();
     holeRaf = open() ? requestAnimationFrame(tick) : 0;
   };
@@ -1265,11 +1179,11 @@ function tileClass(video: boolean): string {
   return video ? "xtag-tile xtag-tile-video" : "xtag-tile";
 }
 
-// Tiles load X's `small` variant (fits within 680px, ASPECT PRESERVED),
-// never the full-size rendition. The 1.x grid used the square-cropped
-// 360x360; a mosaic cannot; a square crop displayed in a true-ratio box
-// re-crops twice, and a tile with no payload ratio learns its ratio from
-// this very thumbnail's natural size, which a crop would falsify.
+// Tiles load X's `small` variant (fits within 680px, aspect preserved),
+// never the full-size rendition and never a square crop: a square crop
+// displayed in a true-ratio box re-crops twice, and a tile with no
+// payload ratio learns its ratio from this very thumbnail's natural
+// size, which a crop would falsify.
 function thumbSrc(src: string): string {
   try {
     const url = new URL(src, location.origin);
@@ -1282,41 +1196,35 @@ function thumbSrc(src: string): string {
 }
 
 // Open a tile: click the FEED'S OWN photo anchor when that anchor is at
-// hand, and deep-link when it is not. Either way X opens the photo viewer as
-// a MODAL OVER THE PHOTOS FEED; its close is a history.back() to the feed;
-// and the grid never deactivates: the path watcher merely hides the overlay
-// while the viewer route is up, so "back out" of the image lands in the grid
-// exactly as it was (user ask 2026-08-14 round 3).
+// hand, and deep-link when it is not. Either way X opens the photo
+// viewer as a modal over the photos feed; its close is a history.back()
+// to the feed; and the grid never deactivates: the path watcher merely
+// hides the overlay while the viewer route is up, so backing out of the
+// image lands in the grid exactly as it was.
 //
-// ROUND 24 (user: "clicking on an image modal takes significantly longer
-// since it still has to scroll all the way to the image location"). The ride
-// did not change; the feed it rides did. While the driver walked the window,
-// X had fetched and mounted every cell down to the frontier, so a tile
-// usually carried a cellY and the ride was one jump to a cell X already
-// held. The loader asks X by cursor now (see the driveLoop comment) and the
-// feed underneath stays clipped, so X's own timeline holds only its shallow
-// passive pages; and the old hunt answered that by making X fetch its way
-// down to the cell, one page at a time, up to 3.2s of it, out of the very
-// rate bucket the round-14 floor exists to protect.
-//
-// So the ride is now taken only when it is CHEAP, and pushPhotoRoute; which
-// costs one scroll of nothing and one TweetDetail fetch; carries the rest.
-// Three steps, cheapest first, and every one of them ends in the same viewer:
+// The anchor ride is taken only when it is CHEAP. The loader asks X by
+// cursor (see the driveLoop comment) and the feed underneath stays
+// clipped, so X's own timeline holds only its shallow passive pages;
+// hunting a deep cell would make X fetch its way down one page at a
+// time, seconds of waiting spent out of the very rate bucket the floor
+// protects. pushPhotoRoute, which costs one TweetDetail fetch, carries
+// the rest. Three steps, cheapest first, and every one of them ends in
+// the same viewer:
 //
 //   1. The anchor is mounted: click it, no borrow, no movement at all.
-//   2. The tile has a cellY, so X held this cell once: one jump, RIDE_MS of
-//      patience for the remount.
+//   2. The tile has a cellY, so X held this cell once: one jump, RIDE_MS
+//      of patience for the remount.
 //   3. Anything else: deep-link.
 //
-// A tile with no cellY is one whose cell X has never mounted, which is
-// exactly the tile the old hunt spent seconds failing to reach.
+// A tile with no cellY is one whose cell X has never mounted; that is
+// the cell a hunt would spend seconds failing to reach.
 const RIDE_MS = 400;
 
 async function openTile(tile: Tile): Promise<void> {
   if (navigating) return;
   navigating = true;
   // The clicked tile dims while the ride runs; without it a click that
-  // waits on a remount looks ignored (round 18).
+  // waits on a remount looks ignored.
   tile.el?.classList.add("xtag-tile-opening");
   try {
     const find = (): HTMLAnchorElement | null => {
@@ -1373,49 +1281,32 @@ async function openTile(tile: Tile): Promise<void> {
   }
 }
 
-// THE DEEP LINK MUST CARRY X'S OWN HISTORY STATE (user report 2026-08-15:
-// "clicking an image on the grid and then clicking out sometimes brings
-// you to that specific image page instead of back to the grid").
+// The deep link must carry X's own history state. Measured live on
+// x.com: when X's own feed anchor opens the photo viewer it pushes
+// `{ key, state: { fromApp: true, previousPath: "/h/media?filter=photo" } }`,
+// and the viewer's close reads that entry. With a previousPath it does
+// history.back(); the grid returns untouched. With no previousPath (a
+// bare `pushState({})`) the close instead PUSHES the tweet's status
+// page (X's own state names that branch `usedFallback: true`), so both
+// ways out of the viewer strand the reader on that photo's tweet with
+// the grid gone, and Back only walks them into the viewer again.
+// (Browser Back always works; X's viewer ignores Escape entirely, on
+// this path and on the anchor path alike.)
 //
-// Measured live on x.com: when X's own feed anchor opens the photo viewer
-// it pushes `{ key, state: { fromApp: true, previousPath: "/h/media?
-// filter=photo" } }`, and the viewer's close reads that entry. With a
-// previousPath it does history.back(); the grid returns untouched. With
-// NO previousPath; which is exactly what the old bare `pushState({})`
-// left behind; the close instead PUSHES the tweet's status page; X's own
-// state names that branch `usedFallback: true`. So both ways out of the
-// viewer; the ✕ and clicking out beside the image; stranded the reader
-// on that photo's tweet with the grid gone, and Back only walked them into
-// the viewer again. (Browser Back always worked; X's viewer ignores
-// Escape entirely, on this path and on the anchor path alike.)
-//
-// "Sometimes" was which tiles had a mounted anchor: at the top of a feed
-// only the first ~6 do (measured), so everything deeper took this path. It
-// is not "sometimes" any more; round 24 made this the ordinary way a tile
-// opens, so the state below is load-bearing rather than a fallback's
-// courtesy. If X ever changes the shape it pushes, this is what has to
-// follow it.
+// Deep-linking is the ordinary way a tile opens (at the top of a feed
+// only the first ~6 tiles have a mounted anchor, measured), so the
+// state below is load-bearing rather than a fallback's courtesy. If X
+// ever changes the shape it pushes, this is what has to follow it.
 //
 // The synthetic popstate carries history.state, never a fresh `{}`: X's
-// router reads event.state, and handing it a state that disagrees with the
-// entry we just pushed is the same lie one level down.
+// router reads event.state, and handing it a state that disagrees with
+// the entry we just pushed is the same lie one level down.
 function pushPhotoRoute(href: string): void {
   const previousPath = location.pathname + location.search;
   const key = Math.random().toString(36).slice(2, 8);
   history.pushState({ key, state: { fromApp: true, previousPath } }, "", href);
   window.dispatchEvent(new PopStateEvent("popstate", { state: history.state }));
 }
-
-// THE ANCHOR HUNT IS GONE (round 24), and the two functions it needed with
-// it; mountedRefs, which mapped grid ordinals onto mounted translateYs, and
-// huntAnchor, which walked that map in corrected jumps. It was the right
-// answer while the driver owned the window: the cell it was looking for was
-// one X had already fetched, so the walk converged in 2-3 jumps. Once the
-// loader stopped driving, the walk was no longer navigating to a cell; it
-// was ASKING X TO FETCH ITS WHOLE FEED down to one photo, at X's pace, to
-// save a single TweetDetail request on the way into a viewer that opens the
-// same either way. openTile deep-links instead. `git show f1f72b5^` has the
-// hunt if the window ever goes back to the driver.
 
 function makeTileEl(tile: Tile): HTMLAnchorElement {
   const a = document.createElement("a");
@@ -1430,11 +1321,11 @@ function makeTileEl(tile: Tile): HTMLAnchorElement {
   if (tile.ratio !== undefined) a.dataset.xtagRatio = String(tile.ratio);
   const img = document.createElement("img");
   img.src = thumbSrc(tile.src);
-  // EVERY tile fetches eagerly (round 10; lazy loading let a fast reader
-  // outrun the fetches, the "black boxes"): this is naturally bounded,
-  // because a tile only exists once the driver has walked its cell, and
-  // the driver only walks ~bufferPx() ahead of the reader. Cache-restored
-  // tiles are bounded by having been loaded once already.
+  // EVERY tile fetches eagerly (lazy loading lets a fast reader outrun
+  // the fetches into black boxes): this is naturally bounded, because a
+  // tile only exists once the driver has walked its cell, and the driver
+  // only walks ~bufferPx() ahead of the reader. Cache-restored tiles are
+  // bounded by having been loaded once already.
   img.loading = "eager";
   img.decoding = "async";
   img.alt = "";
@@ -1479,7 +1370,7 @@ function makeTileEl(tile: Tile): HTMLAnchorElement {
   return a;
 }
 
-// --- placing tiles: run merging (round 23) ---------------------------------
+// --- placing tiles: run merging --------------------------------------------
 // EVERY source of tiles hands over a RUN; photos it knows to be in feed
 // order, newest first. The harvest reads its cells in translateY order and
 // each cell's anchors in DOM order; a timeline payload lists its tweets in
@@ -1491,7 +1382,7 @@ function makeTileEl(tile: Tile): HTMLAnchorElement {
 // where the run sits. New photos go immediately before the next anchor, and
 // whatever is left over at the end goes just after the last one. A 4-photo
 // post is contiguous inside its cell's run, so its four tiles can never be
-// split apart; the user's missing-first-photo report.
+// split apart.
 interface Draft {
   href: string;
   // Null when the feed cell has mounted the anchor but has not painted its
@@ -1514,9 +1405,8 @@ function placed(tile: Tile | undefined): tile is Tile & { el: HTMLAnchorElement 
 // the feed forward, so the answer is nearly always the tail; and for a
 // payload or cache run, which carries no feed coordinate, the tail is the
 // whole answer. A HARVESTED run is different: the window can jump back over
-// cells whose photos never painted (a tile hunt walks the window, so does
-// the top snap), and appending those to the end of the grid is the very
-// scrambling this round removes. Such a run knows its own translateY, so
+// cells whose photos never painted, and appending those to the end of
+// the grid scrambles it. Such a run knows its own translateY, so
 // bracket it against the tiles that carry one.
 //
 // The bracket is TWO-SIDED. The near side alone; "before the first tile
@@ -1634,10 +1524,10 @@ function harvest(): number {
   return mergeRun(run);
 }
 
-// --- the API prefill (round 9) ---------------------------------------------
-// The user's twin requirements; a FULL grid on the first click AND zero
-// page shifting; cannot both be met by DOM harvesting: the virtualizer
-// only mounts and fetches what the window scroll reaches, so any
+// --- the API prefill -------------------------------------------------------
+// Two requirements, a full grid on the first click AND zero page
+// shifting, cannot both be met by DOM harvesting: the virtualizer only
+// mounts and fetches what the window scroll reaches, so any
 // scroll-driven prefill IS the shift. The initial screens therefore come
 // from X's own timeline API: the page already fetched a UserMedia page to
 // render this very feed, resource timing carries that request's full URL
@@ -1654,11 +1544,10 @@ interface ApiMedia { href: string; src: string; video: boolean; ratio?: number; 
 // --- observing the page's own GraphQL traffic ------------------------------
 // Resource timing's default buffer is 250 ENTRIES and an X page burns
 // through that in seconds (avatars, thumbnails, video segments), so
-// getEntriesByType() misses the feed's own request more often than it sees
-// it; the round-9 "no UserMedia request observed" failure on the user's
-// console. A PerformanceObserver keeps receiving entries after the buffer
-// is full; registered at init, with buffered replay for requests that
-// happened before us.
+// getEntriesByType() misses the feed's own request more often than it
+// sees it. A PerformanceObserver keeps receiving entries after the
+// buffer is full; registered at init, with buffered replay for requests
+// that happened before us.
 interface SeenRequest { name: string; startTime: number; }
 const graphqlSeen: SeenRequest[] = [];
 
@@ -1682,12 +1571,11 @@ function opNameOf(url: string): string {
   return match ? match[1] : "?";
 }
 
-// The photos feed's op is "UserPhotoTimeline" (measured on the user's
-// live console 2026-08-14; beside UserVideoTimeline and
-// UserOriginalsTimeline; nothing called "UserMedia" fires on this route
-// any more). "Media" stays as the fallback for older naming. A wrong pick
-// is harmless: the owner filter discards foreign media and the page loop
-// stops on an empty page.
+// The photos feed's op is "UserPhotoTimeline" (measured live; beside
+// UserVideoTimeline and UserOriginalsTimeline; nothing called
+// "UserMedia" fires on this route any more). "Media" stays as the
+// fallback for older naming. A wrong pick is harmless: the owner filter
+// discards foreign media and the page loop stops on an empty page.
 const MEDIA_OP_RE = /PhotoTimeline|Media/;
 
 function latestMediaTemplate(since: number): string | null {
@@ -1705,7 +1593,7 @@ function csrfToken(): string {
   return match ? match[1] : "";
 }
 
-// --- intercepted payloads (round 13) ---------------------------------------
+// --- intercepted payloads --------------------------------------------------
 // The MAIN-world interceptor (interceptor.ts) dispatches every
 // photos-timeline response body the PAGE fetches. While the grid is active
 // they mint tiles directly; which is also what makes deep loading fast:
@@ -1723,32 +1611,32 @@ let apiCooldownUntil = 0;
 // timelines only prepend, so a deep cursor stays valid, and new posts arrive
 // on page 1 which the interceptor mints anyway.
 //
-// IT COVERS THE EXTENSION NOW, NOT JUST THE CACHE, and it has to. The feed
-// under the grid is clipped, which keeps X fetching its own hidden pages;
-// and every one of those payloads used to rewind our cursor to X's shallow
-// position. We then re-asked for pages we already had: the fetches returned
-// twenty photos each and minted no new tile, the loop read that as no
-// progress, and a 297-photo profile stopped at 79 (measured 2026-08-17).
+// It covers the extension, not just the cache, and it has to. The feed
+// under the grid is clipped, which keeps X fetching its own hidden
+// pages; and every one of those payloads would rewind our cursor to X's
+// shallow position. We would then re-ask for pages we already had: the
+// fetches return twenty photos each and mint no new tile, the loop
+// reads that as no progress, and a deep profile ends early (measured: a
+// 297-photo profile stopped at 79).
 let cursorOurs = false;
 // The cursor path has answered with something other than a page, so deep
 // loading falls back to driving the window until the next activation. Kept
 // apart from cursorOurs, which answers a different question (whose cursor
 // outranks whose) and must not be cleared by a failure here.
 //
-// WHY THE CURSOR PATH IS THE DEFAULT NOW, and it is not about saving
-// requests: the page's own scrollbar is the reader's, so the window is no
-// longer ours to walk. Driving asks X for a page by scrolling until X decides
-// to fetch one; extending asks for the same page directly, from the same
-// session, against the same bucket. One page either way; what changes is who
-// holds the scroll while it happens. The bucket is still the round-9 hazard
-// (three active pages at once emptied it and 429'd X's own feeds), so this
-// stays behind the round-14 floor and the drive's pacing, exactly as the
-// restore path already did.
+// Why the cursor path is the default, and it is not about saving
+// requests: the page's own scrollbar is the reader's, so the window is
+// not ours to walk. Driving asks X for a page by scrolling until X
+// decides to fetch one; extending asks for the same page directly, from
+// the same session, against the same bucket. One page either way; what
+// changes is who holds the scroll while it happens. The bucket is still
+// the hazard (a few active pages at once can empty it and 429 X's own
+// feeds), so this stays behind the rate floor and the drive's pacing.
 let extendBroken = false;
 // The API said the timeline is over: a TimelineTerminateTimeline(Bottom)
 // instruction in a payload, or a cursor that echoes past every retry.
 // This is what lets the skeleton tail settle in one beat instead of
-// waiting out ~6s of stall patience (round 14, user report).
+// waiting out ~6s of stall patience.
 let feedEnded = false;
 // Several conditions can end a feed, and from the outside every one
 // looks the same: the skeletons stop and a count sits there. The reason
@@ -1759,21 +1647,20 @@ function endFeed(reason: string): void {
   feedEnded = true;
 }
 let emptyPages = 0;
-// --- THE CURSOR ECHO IS AMBIGUOUS (the /morellostorment bug, 2026-08-18) ---
+// --- the cursor echo is ambiguous ------------------------------------------
 // An empty page whose Bottom cursor equals the cursor that asked for it
-// has TWO meanings, indistinguishable on sight: the true end (measured on
-// /echosluden: no terminate instruction, just the echo past the last
-// content page), or a mid-feed STALL (measured on /morellostorment: the
-// 1.x grid ended itself at 102 photos on one echo while X's own feed read
-// straight past to 148+; the photo filter runs server-side over the media
-// timeline, and an echo can mean "nothing matched this scan window, ask
-// again", which X's own client retries and we concluded). The only way to
-// tell the end from a stall is to ask again: the same cursor gets
-// ECHO_RETRIES more asks, spaced out (a stall is transient; hammering the
-// same cursor 180ms apart re-asks the same overloaded shard), and only a
-// cursor that echoes every time is the end. The price is ECHO_RETRIES
-// requests at every profile's true end. Do not simplify this back to
-// single-echo-ends.
+// has TWO meanings, indistinguishable on sight: the true end (no
+// terminate instruction, just the echo past the last content page), or
+// a mid-feed STALL (measured live: one grid ended itself at 102 photos
+// on one echo while X's own feed read straight past to 148+; the photo
+// filter runs server-side over the media timeline, and an echo can mean
+// "nothing matched this scan window, ask again", which X's own client
+// retries). The only way to tell the end from a stall is to ask again:
+// the same cursor gets ECHO_RETRIES more asks, spaced out (a stall is
+// transient; hammering the same cursor 180ms apart re-asks the same
+// overloaded shard), and only a cursor that echoes every time is the
+// end. The price is ECHO_RETRIES requests at every profile's true end.
+// Do not simplify this back to single-echo-ends.
 const ECHO_RETRIES = 2;
 const ECHO_RETRY_MS = 1500;
 let stallCursor: string | null = null;
@@ -1801,15 +1688,15 @@ const payloadBuffer: { url: string; body: string; at: number; handle: string }[]
 
 // X's OWN media total per handle, from the UserByScreenName responses the
 // interceptor forwards (legacy.media_count; exact, locale-free; the top
-// bar's "N photos & videos" TEXT was measured and rejected: it carries no
-// testid and localized abbreviations like "12 हज़ार" or "12万" parse as
-// small integers, which would false-end big profiles). It is a CEILING:
-// the count includes videos, so tiles can reach it only when the photos
-// feed is complete. This is the end signal that needs NO timeline payload
-// and NO dock: a 1-photo profile shimmered forever (user report
-// 2026-08-15) because the stall settle is dock-only BY DESIGN, and a feed
-// X serves from its client cache fetches nothing for the short-page rule
-// to read. Keyed map, so it survives SPA hops and grid re-activations.
+// bar's "N photos & videos" TEXT was rejected: it carries no testid and
+// localized abbreviations like "12 हज़ार" or "12万" parse as small
+// integers, which would false-end big profiles). It is a CEILING: the
+// count includes videos, so tiles can reach it only when the photos
+// feed is complete. This is the end signal that needs NO timeline
+// payload and NO dock; without it a 1-photo profile shimmers forever,
+// because the stall settle is dock-only by design, and a feed X serves
+// from its client cache fetches nothing to read an end from. Keyed map,
+// so it survives SPA hops and grid re-activations.
 const profileMediaCounts = new Map<string, number>();
 const PROFILE_COUNTS_MAX = 50;
 
@@ -1901,7 +1788,7 @@ function fmtTime(at: number): string {
   return new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-// "1 photo", never "1 photos" (round 15, user report).
+// "1 photo", never "1 photos".
 function nphotos(n: number): string {
   return n === 1 ? "1 photo" : `${n} photos`;
 }
@@ -1930,14 +1817,14 @@ function applyPayload(url: string, body: string, srcHandle: string): void {
     payloadSeen = true;
     const owned = media.filter(
       (m) => m.href.toLowerCase().startsWith(`/${gridHandle}/status/`)).length;
-    // THE NON-ADVANCING CURSOR (measured live on /echosluden, 2026-08-15):
-    // X can end a timeline with NO terminate instruction at all; the
-    // terminal page is 717 bytes of cursor-only entries whose Bottom
-    // cursor EQUALS the cursor that requested it. A mid-feed cursor-only
-    // page (the deleted-tweets shape the empty-page distrust exists for)
-    // always ADVANCES its cursor, so bottom == requested can only mean
-    // "nothing past here". Gated on the handle the payload ARRIVED under
-    // (recorded at interception time), so a stale buffered page from a
+    // The non-advancing cursor (measured live): X can end a timeline
+    // with NO terminate instruction at all; the terminal page is
+    // cursor-only entries whose Bottom cursor EQUALS the cursor that
+    // requested it. A mid-feed cursor-only page (the deleted-tweets
+    // shape the empty-page distrust exists for) always ADVANCES its
+    // cursor, so bottom == requested can only mean "nothing past here".
+    // Gated on the handle the payload ARRIVED under (recorded at
+    // interception time), so a stale buffered page from a
     // previously-viewed profile can never end this one's feed.
     if (media.length === 0 && srcHandle === gridHandle && cursors.length) {
       const reqCursor = requestCursorOf(url);
@@ -1963,12 +1850,12 @@ function applyPayload(url: string, body: string, srcHandle: string): void {
       // A cursor of ours outranks the passive page-1 one; see cursorOurs.
       if (cursors.length && !cursorOurs) payloadCursor = cursors[cursors.length - 1];
     }
-    // The terminate instruction, if X ever sends one. It did not on any page
-    // measured (see SHORT_PAGE_MIN's grave above), so the non-advancing
-    // cursor echo is the end signal that does the work; but a payload
-    // that DOES say terminate is still saying the timeline is over. A page's
-    // SIZE says nothing: a sparse page mid-feed is the normal shape of a
-    // photos timeline filtered server-side.
+    // The terminate instruction, if X ever sends one. It did not on any
+    // page measured, so the non-advancing cursor echo is the end signal
+    // that does the work; but a payload that DOES say terminate is still
+    // saying the timeline is over. A page's SIZE says nothing: a sparse
+    // page mid-feed is the normal shape of a photos timeline filtered
+    // server-side.
     if (flags.terminated) endFeed("X sent TimelineTerminateTimeline");
   } catch (error) {
     console.warn("[xtag] media payload parse failed:", error);
@@ -1988,12 +1875,12 @@ function handleMediaPayload(url: string, body: string): void {
   if (payloadBuffer.length > 4) payloadBuffer.shift();
 }
 
-// 10 MINUTES, not the old 30s: "browse the photos feed a while, then pick
-// Grid from the dropdown" used to activate with an expired buffer; no
-// payload, so no terminate/short-page end signal, and on a profile too
-// small to dock the tail shimmered forever. Staleness across profiles is
-// handled structurally, not by the clock: mintApiTiles owner-filters every
-// tile and applyPayload arms the template/cursor/end only on owned > 0.
+// 10 minutes, deliberately long: "browse the photos feed a while, then
+// pick a grid from the dropdown" must not activate with an expired
+// buffer; no payload means no end signal, and on a profile too small to
+// dock the tail shimmers forever. Staleness across profiles is handled
+// structurally, not by the clock: mintApiTiles owner-filters every tile
+// and applyPayload arms the template/cursor/end only on owned > 0.
 const PAYLOAD_BUFFER_TTL_MS = 10 * 60_000;
 
 function drainPayloadBuffer(): void {
@@ -2006,14 +1893,15 @@ function drainPayloadBuffer(): void {
 }
 
 // One media entity as one ApiMedia, or null for anything else. `index` is
-// the entity's 1-BASED POSITION in the media array it was reached through,
-// and it OVERRIDES the number in expanded_url. MEASURED live 2026-08-27
-// (store dump on a 4-photo post): X writes /photo/1 on EVERY media entity
-// of a multi-photo post: four distinct media_url_https, four identical
-// expanded_urls. The per-photo index exists only as array position (which
-// is also how X's own viewer routes: the n-th media opens /photo/<n>,
-// counted across the whole array, videos included). Building the href off
-// expanded_url alone deduped a 4-photo post down to one tile.
+// the entity's 1-BASED POSITION in the media array it was reached
+// through, and it OVERRIDES the number in expanded_url. Measured live on
+// a 4-photo post: X writes /photo/1 on EVERY media entity of a
+// multi-photo post: four distinct media_url_https, four identical
+// expanded_urls. The per-photo index exists only as array position
+// (which is also how X's own viewer routes: the n-th media opens
+// /photo/<n>, counted across the whole array, videos included).
+// Building the href off expanded_url alone dedupes a 4-photo post down
+// to one tile.
 function mediaEntityOf(
   obj: Record<string, unknown>, index: number | null,
 ): ApiMedia | null {
@@ -2052,14 +1940,13 @@ function mediaEntityOf(
 // timeline is a TimelineTerminateTimeline instruction whose direction
 // includes Bottom.
 //
-// X CARRIES A POST'S FIRST PHOTO TWICE (entities.media beside
+// X carries a post's first photo TWICE (entities.media beside
 // extended_entities.media), so the raw walk finds it once per copy.
-// Nothing downstream broke (the tile map dedupes by href), but `found`
-// counted both, which flattered the spend receipt (1.x measured on
-// /NASA: 434 "found" against 197 real tiles). The dedupe is WITHIN ONE
-// PAGE only, deliberately: across pages a repeat is a real signal (we
-// bought something we already held), and the end detection reads
-// `found === 0` to spot the terminal page.
+// Nothing downstream breaks (the tile map dedupes by href), but `found`
+// would count both, which flatters the spend receipt. The dedupe is
+// WITHIN ONE PAGE only, deliberately: across pages a repeat is a real
+// signal (we bought something we already held), and the end detection
+// reads `found === 0` to spot the terminal page.
 function scanApiPayload(
   node: unknown, media: ApiMedia[], cursors: string[],
   flags?: { terminated: boolean },
@@ -2238,7 +2125,7 @@ async function apiPrefill(): Promise<void> {
       6000);
     if (!active || gridHandle !== startedFor) return;
     // A feed that already ENDED needs no replay whatever the tile count:
-    // a profile with 3 photos is full at 3 (round 15).
+    // a profile with 3 photos is full at 3.
     if (feedEnded || tiles.size >= PREFILL_MIN_TILES) {
       console.info(`[xtag] mosaic prefill: ${tiles.size} photos, all passive`);
       return;
@@ -2258,8 +2145,8 @@ async function apiPrefill(): Promise<void> {
       return;
     }
     // At most ONE active page of CONTENT; replays share the page's own
-    // rate-limit bucket, and the round-9 three-page version emptied it
-    // (429s that took X's own feeds down with it). A stalled ask bought
+    // rate-limit bucket, and a multi-page prefill can empty it (429s
+    // that take X's own feeds down with it). A stalled ask buys
     // nothing, and this is the only asker on an undocked tiny profile:
     // if it treats one echo as final, nothing else ever settles that
     // grid (the stall settle is dock-only).
@@ -2283,14 +2170,13 @@ async function apiPrefill(): Promise<void> {
   }
 }
 
-// --- the grid cache (round 14) ---------------------------------------------
+// --- the grid cache --------------------------------------------------------
 
 function stashGrid(): void {
   if (!gridHandle || tiles.size === 0 || !gridEl) return;
-  // THE GRID'S OWN CHILDREN ARE THE ORDER. This used to sort the tile map by
-  // `key` instead, which mixed the two old numbering schemes and handed the
-  // revisit a scrambled grid; the round-23 report. Skeletons carry no
-  // xtagId and drop out of the walk.
+  // The grid's own children ARE the order (see the Tile comment: tiles
+  // carry no ordering number). Skeletons carry no xtagId and drop out
+  // of the walk.
   const entries: CachedGrid["entries"] = [];
   for (const child of Array.from(gridEl.children) as HTMLElement[]) {
     const tile = child.dataset.xtagId ? tiles.get(child.dataset.xtagId) : undefined;
@@ -2348,21 +2234,14 @@ async function driveLoop(): Promise<void> {
   const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
   // Each position's render clock starts at activation / at the last step.
   let lastStepAt = Date.now();
-  // The window position last seen by this loop: the catch-up jump may only
-  // fire while the window is STATIONARY between iterations. A moving
-  // window means someone else is driving; X's sticky-bar scroll-to-top
-  // animates the window toward 0 over many frames, and an eager jump
-  // mid-flight would eat the reader's click (round 7). Kept as a record of
-  // why the jump existed; the jump itself went with the driver's claim on the
-  // window.
-  // Progress = ANY new tile, harvested or payload-minted (round 13): the
-  // interceptor mints whole pages the moment X's fetch lands, so gating
-  // on harvest alone would read a perfectly-loading grid as stalled.
+  // Progress = ANY new tile, harvested or payload-minted: the interceptor
+  // mints whole pages the moment X's fetch lands, so gating on harvest
+  // alone would read a perfectly-loading grid as stalled.
   let lastTotal = -1;
   while (active && overlay === startedFor) {
     // Belt against every "overlay left the DOM while active" class: a
     // driver scrolling for a grid nobody can see is the worst failure
-    // mode this feature has (it happened; see buildOverlay's comment).
+    // mode this feature has (see buildOverlay's comment).
     if (!overlay!.isConnected) {
       document.body.appendChild(overlay!);
     }
@@ -2386,13 +2265,13 @@ async function driveLoop(): Promise<void> {
         // no feed cells at all, so the end signals (non-advancing cursor,
         // media_count) fire first and the harvest mints only once the tab
         // fronts; the settled status must follow the count, or it reads
-        // "No photos here." under a visible tile (seen live, /echosluden).
+        // "No photos here." under a visible tile (seen live).
         setStatus(tiles.size === 0 ? "No photos here." : nphotos(tiles.size));
       }
     }
-    // X'S OWN CEILING (the 1-photo fix): media_count from UserByScreenName
-    // counts photos AND videos, so the photos feed can never yield more;
-    // tiles reaching it means complete, whatever happened to the timeline
+    // X's own ceiling: media_count from UserByScreenName counts photos
+    // AND videos, so the photos feed can never yield more; tiles
+    // reaching it means complete, whatever happened to the timeline
     // payloads. This is the one end signal that works UNDOCKED with no
     // payload at all (client-cache revisits); 0 >= 0 also settles a truly
     // media-less profile to "No photos here.".
@@ -2402,8 +2281,8 @@ async function driveLoop(): Promise<void> {
         endFeed(`media_count ceiling (${tiles.size} tiles >= ${stated} stated)`);
       }
     }
-    // The API's own word that the timeline is over (round 14): settle NOW
-    // instead of waiting out ~6s of stall patience after the last tile.
+    // The API's own word that the timeline is over: settle NOW instead
+    // of waiting out ~6s of stall patience after the last tile.
     if (feedEnded && !exhausted) {
       exhausted = true;
       setStatus(tiles.size === 0 ? "No photos here." : nphotos(tiles.size));
@@ -2434,17 +2313,17 @@ async function driveLoop(): Promise<void> {
     }
     // The driver only ever moves the window while DOCKED on the photos
     // feed: before the dock the header is on screen and the window scroll
-    // belongs to the user (their own scrolling is what loads; the round-6
-    // auto-fill is REMOVED, see the EAGER_TILES comment); on the
-    // photo-viewer route the grid is merely hidden under the viewer; and
-    // a tile click is riding the window scroll itself.
+    // belongs to the user (their own scrolling is what loads; see the
+    // no-prefill rule above bufferPx); on the photo-viewer route the
+    // grid is merely hidden under the viewer; and a tile click is riding
+    // the window scroll itself.
     if (!docked || navigating || !onPhotosFeed()) {
       if (onPhotosFeed()) setStatus(nphotos(tiles.size));
       await sleep(IDLE_MS);
       continue;
     }
-    // THE RATE-LIMIT FLOOR (round 14): more tiles are wanted, but the
-    // budget X's own headers report is nearly spent. Every fetch here
+    // The rate-limit floor: more tiles are wanted, but the budget X's
+    // own headers report is nearly spent. Every fetch here
     // (driven, replayed or cursor-extended) draws from the bucket X's
     // real feeds run on, so the driver rests instead of draining it to
     // zero, and says when loading resumes.
@@ -2454,32 +2333,20 @@ async function driveLoop(): Promise<void> {
       await sleep(1000);
       continue;
     }
-    // The round-13 catch-up jump is gone, and it had to go: it moved the
-    // window from wherever it was to the deepest position the driver had
-    // reached, on the premise that the window was the driver's to place. It is
-    // the reader's now, and a borrow that moves it
-    // puts it straight back; so the gap that jump measured is just the
-    // distance between the reader and a scroll position nobody is at, and
-    // closing it would have thrown them down the page for nothing.
     // Which way the next page arrives, decided once, because the two ways
     // have different ends.
     const willExtend = !extendBroken && !feedEnded && !!payloadTemplate
       && !!payloadCursor;
     const doc = document.documentElement;
-    // THE DOCUMENT'S BOTTOM IS NOT THE FEED'S END ANY MORE. It used to be
-    // exactly that: the window was the driver's, so reaching the end of the
-    // document meant the driver had walked X's whole feed and X had stopped
-    // answering. The page's scroll is the READER'S now, and its end is simply
-    // the last tile they can see; which is precisely where they are standing
-    // when they want the next page. Measured 2026-08-17 on a profile of 297
-    // photos: it called itself finished at 79, because the reader reached the
-    // bottom and one beat passed with no new tile, three times over.
-    //
-    // So the bottom only speaks for the driving path, the one whose progress
-    // the window still governs. When the next page comes from a request, the
-    // end comes from the answer to that request; no next cursor, a short
-    // page, two empty ones, or X's own terminal marker; every one of which
-    // the extension below already reads.
+    // The document's bottom is not the feed's end. The page's scroll is
+    // the READER'S, and its end is simply the last tile they can see,
+    // which is precisely where they are standing when they want the
+    // next page; reading it as the end calls a deep profile finished
+    // early. So the bottom only speaks for the driving path, the one
+    // whose progress the window still governs. When the next page comes
+    // from a request, the end comes from the answer to that request; no
+    // next cursor, two empty pages in a row, or X's own terminal
+    // marker; every one of which the extension below already reads.
     const atBottom = !willExtend
       && window.scrollY + window.innerHeight >= doc.scrollHeight - 60;
     // RENDER-GATED: give the current position time to paint (or the next
@@ -2513,8 +2380,8 @@ async function driveLoop(): Promise<void> {
       continue;
     }
     setStatus(tiles.size ? nphotos(tiles.size) : "");
-    // CURSOR EXTENSION (round 14): past a cache-restored frontier, one
-    // replayed page from the saved cursor costs exactly one request.
+    // Cursor extension: past a cache-restored frontier, one replayed
+    // page from the saved cursor costs exactly one request.
     // Driving the window instead would make X re-fetch every page ABOVE
     // the frontier first; strictly more spend for the same tiles. Falls
     // back to the drive when the template goes stale (X rotates query
@@ -2548,9 +2415,8 @@ async function driveLoop(): Promise<void> {
           } else {
             emptyPages = 0;
             // A page WITH content ends the feed only by running out of
-            // cursor. Its size means nothing; see the SHORT_PAGE_MIN
-            // grave: the page that stopped /NASA at 49 carried 2 tweets
-            // and a perfectly good cursor to 36 more.
+            // cursor. Its size means nothing; see the short-page rule
+            // above PAGE_COUNT.
             if (!page.next) endFeed("page carried no next cursor");
           }
         }
@@ -2580,9 +2446,8 @@ async function driveLoop(): Promise<void> {
       if (payloadSeen) {
         // Payloads are flowing: tiles come from X's fetch responses, not
         // from mounted cells, so the driver's only job is making X fetch:
-        // one hop to the document's end per page instead of walking every
-        // viewport (round 13; this is what removed the half-minute deep
-        // waits).
+        // one hop to the document's end per page instead of walking
+        // every viewport.
         window.scrollTo(0, realDoc);
       } else {
         // Harvest-only mode: one viewport per step; far enough to make
@@ -2630,8 +2495,8 @@ function activate(): void {
   tiles.clear();
   claimed = false;
   try {
-    // The gridmode clip and the scroll reset are NOT here any more; the
-    // first successful placeOverlay applies them (see `claimed`).
+    // The gridmode clip and the scroll reset are applied by the first
+    // successful placeOverlay (see `claimed`).
     buildOverlay();
   } catch (error) {
     // Whatever failed, never leave the page as a black hole: the class
@@ -2666,14 +2531,14 @@ function deactivate(restoreScroll = true): void {
   stashGrid();
   active = false;
   stopSizing();
-  // THE WINDOW GOES TO THE TOP BEFORE THE FEED COMES BACK, and the order is
-  // the whole point; the same lesson the Likes pane paid for. The reader's
-  // position is a position in the GRID, measured against a spacer that is
-  // about to be zero; the document it is about to belong to is X's own feed at
-  // its real height. Handing one to the other lets the browser clamp into a
-  // collapsed document and then X re-measure a feed far taller than it was.
-  // Going to the top first, while the feed is still clipped and there is
-  // nothing to clamp against, is what X's own tab switch does anyway.
+  // The window goes to the TOP before the feed comes back, and the order
+  // is the whole point. The reader's position is a position in the GRID,
+  // measured against a spacer that is about to be zero; the document it
+  // is about to belong to is X's own feed at its real height. Handing
+  // one to the other lets the browser clamp into a collapsed document
+  // and then X re-measure a feed far taller than it was. Going to the
+  // top first, while the feed is still clipped and there is nothing to
+  // clamp against, is what X's own tab switch does anyway.
   // A grid that never claimed the page never moved it either; the
   // reader's scroll on X's own view is not ours to reset.
   if (restoreScroll && claimed) window.scrollTo(0, 0);
@@ -2739,12 +2604,13 @@ function evaluate(): void {
   }
 }
 
-// --- the third dropdown option ---------------------------------------------
+// --- the injected dropdown items -------------------------------------------
 // X's media menu has two items (Videos / Photos, no testids, words follow
 // the UI language). The media menu is recognized structurally: exactly two
-// real items, one of which repeats the selected media tab's own label. The
-// Mosaic item is a CLONE of the item that is not the current choice (the
-// one without the ✓), so it wears X's own menu styling whatever the theme.
+// real items, one of which repeats the selected media tab's own label.
+// Each injected item is a CLONE of the item that is not the current
+// choice (the one without the ✓), so it wears X's own menu styling
+// whatever the theme.
 
 function realMenuItems(menu: HTMLElement): HTMLElement[] {
   return Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]'))
@@ -2775,11 +2641,10 @@ function setItemText(item: HTMLElement, text: string): void {
   }
 }
 
-// (The per-item rate note is GONE, 2026-08-27: with two injected items
-// the notes made four two-line rows overflow the panel X sizes for its
-// own two, and the bottom item clipped; user screenshot. The cost note
-// lives in the popup beside the select, and the status line still says
-// so the moment the floor bites.)
+// No per-item rate note: a second line on the injected items makes four
+// two-line rows overflow the panel X sizes for its own two, and the
+// bottom item clips. The cost note lives in the popup beside the
+// select, and the status line says so the moment the floor bites.
 
 // One menu item per grid flavor. The attribute VALUE is the mode, so
 // the click handler and the ✓ assert read the item itself; hasAttribute
@@ -2798,11 +2663,11 @@ function injectGridItem(menu: HTMLElement): void {
   // Clone the item WITH the checkmark when one is on screen: the copy
   // then carries X's own ✓ (the blue svg, at X's size and place), and
   // assertMenuChecks shows it on the chosen flavor and hides it on the
-  // other. The text-glyph "✓" this replaces read as foreign beside X's
-  // (user screenshot 2026-08-28). Visibility keeps the svg's layout
-  // slot, exactly how the real items' ✓ is handled one function down.
-  // The pair goes AFTER X's last item, and assertMenuChecks re-glues it
-  // there every batch (see the rewrap comment there).
+  // other. A text-glyph "✓" reads as foreign beside X's. Visibility
+  // keeps the svg's layout slot, exactly how the real items' ✓ is
+  // handled one function down. The pair goes AFTER X's last item, and
+  // assertMenuChecks re-glues it there every batch (see the rewrap
+  // comment there).
   const donor = items.find((item) => item.querySelector("svg"))
     ?? items.find((item) => (item.textContent ?? "").trim() !== tabText)
     ?? items[1];
@@ -2818,28 +2683,26 @@ function injectGridItem(menu: HTMLElement): void {
   assertMenuChecks();
 }
 
-// While the grid is up, the choice on screen is Grid; X's own ✓ on the
-// Photos item (true about the underlying feed, wrong about the view) reads
-// as two selections at once. Hide, don't remove: the node is React-owned,
-// and visibility keeps its layout slot. RE-ASSERTED every mutation batch
-// (round 6; hiding once at inject time was not enough: React re-renders
-// the item after our pass and mounts the ✓ back, which is exactly the tab
-// label's re-assert problem one node over).
+// While the grid is up, the choice on screen is the grid; X's own ✓ on
+// the Photos item (true about the underlying feed, wrong about the view)
+// reads as two selections at once. Hide, don't remove: the node is
+// React-owned, and visibility keeps its layout slot. Re-asserted every
+// mutation batch; hiding once at inject time is not enough, because
+// React re-renders the item after our pass and mounts the ✓ back, which
+// is exactly the tab label's re-assert problem one node over.
 function assertMenuChecks(): void {
   const menu = document.querySelector<HTMLElement>('[role="menu"]');
   if (!menu) return;
   const clones = Array.from(
     menu.querySelectorAll<HTMLElement>(`[${GRID_ITEM_ATTR}]`));
   if (clones.length === 0) return;
-  // EACH CLONE'S LABEL FOLLOWS `active` AND THE MODE, re-asserted per
-  // batch (user report 2026-08-27: "no check next to it until i click
-  // out and click the tab again"). The text used to be written once at
-  // inject time, and a menu can outlive an activation change: picking
-  // Mosaic activates under the still-open menu (closeMenu missed
-  // today's backdrop until the clientWidth fix below), which left a
-  // live mosaic behind an item still reading plain "Mosaic", beside
-  // X's ✓s this very function had hidden. The ✓ sits on the flavor the
-  // grid is actually showing; picking the other flavor moves it.
+  // Each clone's label follows `active` and the mode, re-asserted per
+  // batch, never written once at inject time: a menu can outlive an
+  // activation change (picking Mosaic activates under the still-open
+  // menu), which would leave a live grid behind an item with no ✓,
+  // beside X's ✓s this very function had hidden. The ✓ sits on the
+  // flavor the grid is actually showing; picking the other flavor
+  // moves it.
   for (const clone of clones) {
     const entry = GRID_MENU_ITEMS.find(
       (m) => m.mode === clone.getAttribute(GRID_ITEM_ATTR));
@@ -2857,11 +2720,10 @@ function assertMenuChecks(): void {
       setItemText(clone, chosen ? `${entry.label} ✓` : entry.label);
     }
   }
-  // THE CLONES STAY GLUED TO X'S OWN ITEMS (user screenshot 2026-08-27:
-  // a seam of bare panel opened between the two injected items, and in
-  // an earlier round the bottom item clipped). Shortly after the menu
+  // The clones stay GLUED to X's own items; unglued they show a seam of
+  // bare panel between the injected items. Shortly after the menu
   // mounts, React re-renders it and REWRAPS its two items into a fresh
-  // container (measured live on /NASA: menu becomes [wrapper > Videos,
+  // container (measured live: the menu becomes [wrapper > Videos,
   // Photos]); nodes it does not own are left OUTSIDE that wrapper,
   // wherever reconciliation dropped them, beside whatever helper nodes
   // X renders. Anchored to the last real item, inside the same parent,
@@ -2899,21 +2761,20 @@ function assertMenuChecks(): void {
 // full-viewport backdrop X renders under every dropdown does.
 function closeMenu(): void {
   const menu = document.querySelector('[role="menu"]');
-  // NOTHING TO CLOSE IS NOT AN ESCAPE. The fallback at the end of this
-  // function dispatches a real keydown as far as the rest of the module is
-  // concerned, and the Escape handler in initMosaic reads one as "the
-  // reader wants X's own view"; so calling this with no menu open would
-  // clear a choice nobody revoked (the 1.x likes-tab measured exactly
-  // that, 2026-08-17). A tidy-up must never read as a choice.
+  // Nothing to close is not an Escape. The fallback at the end of this
+  // function dispatches a real keydown as far as the rest of the module
+  // is concerned, and the Escape handler in initMosaic reads one as
+  // "the reader wants X's own view"; so calling this with no menu open
+  // would clear a choice nobody revoked. A tidy-up must never read as
+  // a choice.
   if (!menu) return;
   const layers = document.getElementById("layers");
-  if (menu && layers) {
-    // The LAYOUT viewport, never window.innerWidth: innerWidth counts the
-    // window scrollbar, and X sizes the backdrop to the layout viewport.
-    // Measured 2026-08-27 (the menu that survived a Mosaic pick):
-    // backdrop 1351x931 against innerWidth 1366; the 15px scrollbar kept
-    // the old test from ever matching, so this fell through to the
-    // synthetic Escape, which X ignores (re-measured the same day).
+  if (layers) {
+    // The LAYOUT viewport, never window.innerWidth: innerWidth counts
+    // the window scrollbar, and X sizes the backdrop to the layout
+    // viewport (measured: backdrop 1351x931 against innerWidth 1366).
+    // An innerWidth test never matches, falls through to the synthetic
+    // Escape, and X ignores that.
     const vw = document.documentElement.clientWidth;
     const vh = document.documentElement.clientHeight;
     const backdrop = Array.from(layers.querySelectorAll("div")).find((d) => {
@@ -2933,10 +2794,10 @@ function closeMenu(): void {
 }
 
 function onMenuClick(event: MouseEvent): void {
-  // Synthetic clicks are never intent. Our own Mosaic handler below rides
-  // X's Photos item to reach the photos view; reading that click as "the
-  // user explicitly chose the feed" was the 1.x bug that kept the grid
-  // from ever activating (user report 2026-08-14).
+  // Synthetic clicks are never intent. Our own handler below rides X's
+  // Photos item to reach the photos view; reading that click as the
+  // user explicitly choosing the feed would clear the pick and keep the
+  // grid from ever activating.
   if (selfClicking) return;
   const target = event.target;
   if (!(target instanceof Element)) return;
@@ -2960,7 +2821,7 @@ function onMenuClick(event: MouseEvent): void {
       evaluate();
     } else {
       // On the videos view: ride X's own Photos item (the one not naming
-      // the current tab); the arrival watcher builds the mosaic on landing.
+      // the current tab); the arrival watcher builds the grid on landing.
       const tab = selectedMediaTab();
       const tabText = tab ? tabOriginalLabel(tab) : "";
       const photos = realMenuItems(menu)
@@ -3036,23 +2897,21 @@ export function initMosaic(): void {
   });
   // The handshake half of the interceptor's init-race queue: this script
   // registers at document_idle while the interceptor emits from
-  // document_start, so the earliest payloads (UserByScreenName above all)
-  // used to dispatch into nothing on a full page load. Telling the
+  // document_start, so the earliest payloads (UserByScreenName above
+  // all) would dispatch into nothing on a full page load. Telling the
   // interceptor we exist makes it replay everything it queued.
   document.dispatchEvent(new CustomEvent("xtag:media-listen"));
   document.addEventListener("click", onMenuClick, true);
-  // LEAVING THE GRID BY CLICK (round 16), and it outlives the driver that
-  // caused it. X handles a tab or nav click at whatever scroll the window is
-  // at, and while docked that is thousands of pixels deep; the driver's
-  // depth then, the READER'S depth now, since the page's scroll is the grid's.
-  // Either way X renders the NEXT view from it (clamp, virtualizer churn,
-  // header re-render) before deactivate restores anything, and that churn
-  // re-mounts the header nodes our elements live beside: the "everything
-  // blinks" report, which survived round 15 because these removals are
-  // REACT's, not ours. Snapping back to the dock point in the CAPTURE phase,
-  // before X's own handler runs, makes a grid exit identical to a plain tab
-  // switch. (The dropdown's Photos/Videos exits already restore first;
-  // onMenuClick is capture-phase and deactivates before X's bubble handler.)
+  // Leaving the grid by click. X handles a tab or nav click at whatever
+  // scroll the window is at, and while docked that is thousands of
+  // pixels deep. X renders the NEXT view from it (clamp, virtualizer
+  // churn, header re-render) before deactivate restores anything, and
+  // that churn re-mounts the header nodes our elements live beside, so
+  // everything on screen blinks. Snapping back to the dock point in the
+  // CAPTURE phase, before X's own handler runs, makes a grid exit
+  // identical to a plain tab switch. (The dropdown's Photos/Videos
+  // exits already restore first; onMenuClick is capture-phase and
+  // deactivates before X's bubble handler.)
   document.addEventListener("click", (event) => {
     if (!active || !docked || navigating) return;
     const target = event.target;
@@ -3130,7 +2989,6 @@ export function initMosaic(): void {
   });
   // The first evaluation waits for the initial storage reads: the getter
   // answers "photos" until then, and a direct load of the photos URL
-  // with a stored mosaic default would otherwise never activate (the 1.x
-  // lesson, inverted).
+  // with a stored grid default would otherwise never activate.
   void settingsReady().then(evaluate);
 }

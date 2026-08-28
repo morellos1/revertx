@@ -1,5 +1,4 @@
-// Poll `fn` until it returns non-null or `timeoutMs` passes. One helper —
-// media-grid and media-tab each carried their own copy of this loop.
+// Poll `fn` until it returns non-null or `timeoutMs` passes.
 export async function pollFor<T>(
   fn: () => T | null,
   timeoutMs: number,

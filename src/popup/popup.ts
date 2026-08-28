@@ -11,13 +11,12 @@ for (const key of KEYS) {
   });
 }
 
-// The Media default is a 4-way choice now (photos | masonry | mosaic |
+// The Media default is a 4-way choice (photos | masonry | mosaic |
 // videos), one stored `mediaview` string shared with the dropdown picks
-// on the page. Masonry is the column view, Mosaic the justified rows.
-// The rate note shows while either revertX flavor is the pick; the
-// other two views are X's own and cost nothing. This note is the ONE
-// place the cost is said up front; the injected menu items carry no
-// second line (they overflowed X's panel; user screenshot 2026-08-27).
+// on the page. The loading note shows while either revertX view is the
+// pick; the other two views are X's own and load nothing. The note is
+// the one place the cost is said up front: a second line on the
+// injected menu items overflows X's panel.
 const view = $<HTMLSelectElement>("mediaview");
 
 function syncMosaicNote(): void {

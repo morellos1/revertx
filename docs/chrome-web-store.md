@@ -28,7 +28,7 @@ worth a next version, not a rescue.
 | 1.x | A userland grid and a framed Likes pane, no longer shipped. |
 | 2.0.0 | Submitted 2026-08-21, superseded before publication. |
 | 2.0.1 | X's own layouts. The first 2.x the store publishes. |
-| 2.1 | UNRELEASED, branch `feature/mosaic-grid`. Adds the Masonry and Mosaic views. Everything under "The Masonry and Mosaic views" below applies to that submission and to no published version. |
+| 2.1.0 | Adds the Masonry and Mosaic views. Everything under "The Masonry and Mosaic views" below applies from this version. |
 
 ## Listing
 
@@ -62,6 +62,14 @@ worth a next version, not a rescue.
 > Copy link first in the share menu. X put "Send via Chat" on top. This puts
 > "Copy link" back where it was.
 >
+> Masonry and Mosaic, two extra Media tab views. Off unless you pick one
+> from the tab's own dropdown. Both show the same photos at their real
+> shapes instead of square crops: Masonry in columns, Mosaic in rows
+> that fill the width. They load more photos as you scroll, the way the
+> page itself does. X limits how much an account can load at once, so
+> they stop loading early and say when loading continues; the popup
+> notes this where you pick them.
+>
 > revertX collects nothing, sends nothing, and has no analytics. It runs no
 > background process, asks for one permission (storage, for your switches),
 > and runs on x.com only. It is open source under the MIT licence.
@@ -69,42 +77,24 @@ worth a next version, not a rescue.
 > An independent project. Not affiliated with, endorsed by, or sponsored by
 > X Corp.
 
-Keep that last paragraph.
-
-For 2.1, the summary and the first line stay as they are (the four
-restores are still the point) and one paragraph goes in before the
-closing two:
-
-> Masonry and Mosaic, two extra Media tab views. Off unless you pick one
-> from the tab's own dropdown. Both lay the same photos out at their real
-> shapes instead of square crops: Masonry in columns, Mosaic in rows that
-> fill the width. They load pages through your own account's rate limit,
-> so the popup says so where you pick them, and they stop loading before
-> your budget runs out.
-
-Then the "collects nothing, sends nothing" paragraph needs its "runs no
-background process" clause kept honest: it is still true.
+Keep that last paragraph. The summary and the first line stay as they
+are: the four restores are still the point.
 
 ## Single purpose
 
 > revertX modifies the interface of x.com to restore layouts and tabs the
 > site removed (the Media tab's photo grid, the profile Likes tab, the
 > photo grid inside posts) and one navigation convenience in the share
-> menu.
-
-From 2.1, add to that sentence:
-
-> It also offers two alternative layouts for the same media the tab
+> menu. It also offers two alternative layouts for the same media the tab
 > already shows, variable-height views in place of the square grid.
 
 Both halves are the same purpose: how one site's own content is laid out.
 The two views add no new surface, no new site and no new data.
 
-## The Masonry and Mosaic views (2.1, unreleased)
+## The Masonry and Mosaic views (from 2.1.0)
 
-Everything here describes `feature/mosaic-grid` and applies from the
-version that ships it. It is the first feature that makes a request, so it
-is the first that a reviewer will stop on. Answer plainly.
+The views are the first feature that makes a request, so they are the
+first thing a reviewer will stop on. Answer plainly.
 
 **What they are.** Two optional choices in the Media tab's dropdown,
 beside Videos and Photos, off unless the user picks one. Both draw the
@@ -155,7 +145,7 @@ third party; there is no server to reach.
 
 | Field | Justification |
 | --- | --- |
-| `storage` | Two things, both local: the user's preference for each feature (from 2.1 the Media tab's is a choice of four views rather than a switch), and a note of which of X's own feature flags the last page load found, so the popup can tell the user when X has removed a layout. No browsing history, no account data. |
+| `storage` | Two things, both local: the user's preference for each feature (the Media tab's is a choice of four views), and a note of which of X's own feature flags the last page load found, so the popup can tell the user when X has removed a layout. No browsing history, no account data. |
 | Host access | None requested. The content scripts are declared for `https://x.com/*` only. |
 | Remote code | None. No script is fetched or evaluated at runtime. |
 
