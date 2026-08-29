@@ -29,6 +29,7 @@ worth a next version, not a rescue.
 | 2.0.0 | Submitted 2026-08-21, superseded before publication. |
 | 2.0.1 | X's own layouts. The first 2.x the store publishes. |
 | 2.1.0 | Adds the Mosaic view. Everything under "The Mosaic view" below applies from this version. |
+| 2.2.0 | Quota fixes (no page is ever bought twice), the "image quota" pill loses its misread count, and GIF-only profiles get a grid via the `UserMedia` fallback described below. |
 
 ## Listing
 
@@ -111,6 +112,14 @@ square crop, fitted into rows that fill the width.
    calls, with the same session cookie, from x.com. Nothing is sent
    anywhere else, and nothing is stored beyond the tab's own memory.
 
+One variation: when x.com answers the photo timeline with an empty,
+terminated page for a profile that has media (GIF-only profiles; x.com
+serves GIF posts on neither media filter), the view retries once
+against x.com's combined media timeline (`UserMedia`), the same class
+of request to the same `/i/api/graphql/` origin under the same checks
+below. Its query id is read from x.com's own script bundle, which the
+browser already holds in cache.
+
 **Why the request is safe to allow.** The template for it is a request the
 page itself made, and it is refused unless its origin is x.com's own
 `/i/api/graphql/` (`assertOwnApi`, `src/content/mosaic.ts`). Thumbnails
@@ -132,9 +141,9 @@ stops requesting until the window resets and holds off replaying for
 10 minutes beyond that. Closing the view logs a receipt to the
 console: requests spent, budget left, and why loading stopped.
 
-Once the budget runs low, an "Image quota" pill (the count, a small
-fill bar, the reset time) sits at the bottom of the photos view and
-leaves with the window. If the budget is spent anyway, x.com's own
+Once the budget runs low, an "image quota" pill (a small fill bar and
+the reset time; no count, which read as an image count) sits at the
+bottom of the photos view and leaves with the window. If the budget is spent anyway, x.com's own
 photos view fails for the rest of the window ("Something went wrong");
 a one-line note under the profile's tab strip then names the time the
 window resets, and is removed when it does. x.com can also withhold

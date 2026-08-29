@@ -421,7 +421,6 @@ function placeOverlay(): void {
   // dock only exists past the header, so a window that has not even
   // scrolled the sticky bar's height cannot be docked.
   docked = tabBottom <= bar && window.scrollY > bar;
-  overlay.classList.toggle("xtag-grid-docked", docked);
   if (docked) {
     overlay.style.position = "fixed";
     overlay.style.top = `${bar}px`;
@@ -823,7 +822,6 @@ function scheduleLayout(): void {
 function buildOverlay(): void {
   overlay = document.createElement("div");
   overlay.id = OVERLAY_ID;
-  overlay.tabIndex = -1;
   if (isLightTheme()) overlay.classList.add("xtag-light");
   gridEl = document.createElement("div");
   gridEl.className = "xtag-grid-tiles";
@@ -1144,10 +1142,6 @@ function syncMenuHole(): void {
   holeRaf = requestAnimationFrame(tick);
 }
 
-function tileClass(video: boolean): string {
-  return video ? "xtag-tile xtag-tile-video" : "xtag-tile";
-}
-
 // Tiles load X's `small` variant (fits within 680px, aspect preserved),
 // never the full-size rendition and never a square crop: a square crop
 // displayed in a true-ratio box re-crops twice, and a tile with no
@@ -1279,7 +1273,7 @@ function pushPhotoRoute(href: string): void {
 
 function makeTileEl(tile: Tile): HTMLAnchorElement {
   const a = document.createElement("a");
-  a.className = tileClass(tile.video);
+  a.className = tile.video ? "xtag-tile xtag-tile-video" : "xtag-tile";
   a.href = tile.href;
   // The tile's identity on the element itself: stashGrid serializes the
   // order it can SEE by walking these children, and the skeleton tiles,
@@ -1610,6 +1604,11 @@ const PASSIVE_QUIET_MS = 4000;
 // the hazard (a few active pages at once can empty it and 429 X's own
 // feeds), so this stays behind the rate floor and the drive's pacing.
 let extendBroken = false;
+// One replay on the wire at a time. apiPrefill and the driver's cursor
+// extension are independent async paths that ask with the SAME cursor,
+// so overlapping them buys one page twice; each holds this flag across
+// its fetch (retries included) and stands down while the other has it.
+let replayInFlight = false;
 // The API said the timeline is over: a TimelineTerminateTimeline(Bottom)
 // instruction in a payload, or a cursor that echoes past every retry.
 // This is what lets the skeleton tail settle in one beat instead of
@@ -1744,7 +1743,7 @@ function saveRateState(): void {
   try {
     sessionStorage.setItem(RATE_STATE_KEY, JSON.stringify({
       remaining: rateRemaining, resetAt: rateResetAt, last429At,
-      cooldownUntil: apiCooldownUntil,
+      cooldownUntil: apiCooldownUntil, limit: rateLimit,
     }));
   } catch { /* private mode etc.; the page-lifetime picture still works */ }
 }
@@ -1759,6 +1758,9 @@ function loadRateState(): void {
     if (Date.now() >= resetAt) return;
     rateResetAt = resetAt;
     if (typeof s["remaining"] === "number") rateRemaining = s["remaining"];
+    // The pill's denominator; without it a reloaded page shows the
+    // "N left" fallback until a fresh response carries the header.
+    if (typeof s["limit"] === "number" && s["limit"] > 0) rateLimit = s["limit"];
     if (typeof s["last429At"] === "number") last429At = s["last429At"];
     if (typeof s["cooldownUntil"] === "number") {
       apiCooldownUntil = Math.max(apiCooldownUntil, s["cooldownUntil"]);
@@ -1828,6 +1830,16 @@ function nphotos(n: number): string {
 function settleStatus(): string {
   if (tiles.size > 0) return nphotos(tiles.size);
   const stated = profileMediaCounts.get(gridHandle);
+  // The AFFIRMATIVE empty (terminate on an empty page 1, and the
+  // UserMedia fallback found nothing either or could not run): the
+  // timeline is empty by X's own word, not withheld by a throttle, so
+  // "try again later" would be a false promise. GIF-only and
+  // video-only profiles land here when the fallback comes up dry.
+  if (feedEndReason.includes("empty timeline")) {
+    return stated !== undefined && stated > 0
+      ? `X serves none of this profile's ${stated} media as photos`
+      : "X sent an empty photo feed for this profile";
+  }
   return stated !== undefined && stated > 0
     ? "X sent no photos · try again later"
     : "No photos here.";
@@ -1843,8 +1855,8 @@ function statusLine(): string {
   if (!pausedUntil) return nphotos(tiles.size);
   const when = fmtTime(pausedUntil);
   return tiles.size === 0
-    ? `X's loading limit is used up · photos return at ${when}`
-    : `${nphotos(tiles.size)} · X's loading limit · loading resumes ${when}`;
+    ? `X image quota depleted · photos return at ${when}`
+    : `${nphotos(tiles.size)} · X image quota low · loading resumes ${when}`;
 }
 
 // --- the native-view rate notice -------------------------------------------
@@ -1868,10 +1880,13 @@ let softEmptyAt = 0;
 const SOFT_EMPTY_FRESH_MS = 5 * 60_000;
 
 // --- the quota pill --------------------------------------------------------
-// "17 left", where the reader can see it while scrolling: once the
-// window runs low (the same threshold that slows our pages), a small
-// pill sits at the bottom right of any photos view, grid or native,
-// and leaves when the window resets or the reader navigates away. It
+// The loading-limit pill, where the reader can see it while scrolling:
+// once the window runs low (the same threshold that slows our pages), a
+// small pill sits at the bottom of any photos view, grid or native,
+// and leaves when the window resets or the reader navigates away. The
+// label carries NO count: "17 of 50" read as 50 IMAGES, not 50 page
+// loads (user report); the bar says how much is left, the tooltip says
+// what is counted. It
 // lives on body, like the overlay: React never reconciles body's
 // children, so there is nothing to fight and nothing to re-render it
 // out. Asserted wherever the numbers change (noteRateHeaders,
@@ -1901,13 +1916,11 @@ function assertQuotaPill(): void {
     document.body.appendChild(pill);
   }
   const text = rateRemaining === 0
-    ? `Image quota used up · back at ${fmtTime(rateResetAt)}`
-    : rateLimit !== null
-      ? `Image quota ${rateRemaining} of ${rateLimit} · resets ${fmtTime(rateResetAt)}`
-      : `Image quota: ${rateRemaining} left · resets ${fmtTime(rateResetAt)}`;
+    ? `X image quota depleted · photos return at ${fmtTime(rateResetAt)}`
+    : `X image quota low · resets ${fmtTime(rateResetAt)}`;
   const label = pill.firstElementChild as HTMLElement;
   if (label.textContent !== text) label.textContent = text;
-  // The bar needs a denominator; without one the label alone carries it.
+  // The bar needs a denominator; without one the pill is text only.
   const track = pill.querySelector<HTMLElement>(".xtag-quota-track");
   if (track) {
     const show = rateLimit !== null && rateLimit > 0;
@@ -1944,7 +1957,7 @@ function assertRateNotice(): void {
     return;
   }
   const text = limited
-    ? "X's loading limit is used up · photos return at " + fmtTime(rateResetAt)
+    ? "X image quota depleted · photos return at " + fmtTime(rateResetAt)
     : "X sent no photos · try again later";
   if (existing) {
     if (existing.textContent !== text) existing.textContent = text;
@@ -1990,10 +2003,22 @@ function applyPayload(url: string, body: string, srcHandle: string): void {
     const parsed: unknown = JSON.parse(body);
     const media: ApiMedia[] = [];
     const cursors: string[] = [];
-    const flags = { terminated: false };
+    const flags = { terminated: false, terminatedAny: false };
     scanApiPayload(parsed, media, cursors, flags);
     if (mintApiTiles(media) > 0) lastPassiveProgressAt = Date.now();
-    payloadSeen = true;
+    // Only THIS profile's payloads flip the drive into bottom-hop mode:
+    // a stale buffered page from a previously-viewed profile says nothing
+    // about whether this feed fetches, and on a client-cache revisit the
+    // harvest walk is the only source there is.
+    if (srcHandle === gridHandle) {
+      payloadSeen = true;
+      // The UserMedia fallback's source (see tryGifFallback): an EMPTY
+      // page arms no payloadTemplate (owned stays 0 on a profile X
+      // serves nothing for), but its URL still carries this profile's
+      // userId and the features blob, which is everything the fallback
+      // needs to ask the combined media timeline instead.
+      fallbackSourceUrl = url;
+    }
     const owned = media.filter(
       (m) => m.href.toLowerCase().startsWith(`/${gridHandle}/status/`)).length;
     // The non-advancing cursor (measured live): X can end a timeline
@@ -2005,8 +2030,8 @@ function applyPayload(url: string, body: string, srcHandle: string): void {
     // Gated on the handle the payload ARRIVED under (recorded at
     // interception time), so a stale buffered page from a
     // previously-viewed profile can never end this one's feed.
+    const reqCursor = requestCursorOf(url);
     if (media.length === 0 && srcHandle === gridHandle && cursors.length) {
-      const reqCursor = requestCursorOf(url);
       if (reqCursor && cursors[cursors.length - 1] === reqCursor) {
         // X's own client retries ITS stalled cursors; those retries land
         // here as identical echoes and must not vote on OUR frontier when
@@ -2020,6 +2045,18 @@ function applyPayload(url: string, body: string, srcHandle: string): void {
     // Any page with content clears the stall count: the echo it was
     // counting is either resolved or beside the point now.
     if (media.length > 0) noteCursorProgress();
+    // X can TERMINATE an empty FIRST page outright (direction "Top";
+    // measured on /colordifference: an 802-byte page of two cursor
+    // entries and no media at all, against a header media_count of 33).
+    // A GIF-only profile looks exactly like this: X serves animated_gif
+    // posts on NEITHER media filter. No deeper page can exist behind an
+    // empty terminated page 1, so this ends the feed with no
+    // media_count needed (X often omits media_count), and it is what
+    // hands the empty grid to the UserMedia fallback.
+    if (flags.terminatedAny && media.length === 0 && !reqCursor
+      && srcHandle === gridHandle) {
+      endFeed("empty timeline: terminated at page 1");
+    }
     // The template and cursor come only from a payload that provably
     // belongs to THIS profile (owned > 0): the buffer holds payloads for
     // minutes now, so a stale entry from a previously-viewed profile must
@@ -2027,7 +2064,17 @@ function applyPayload(url: string, body: string, srcHandle: string): void {
     if (owned > 0) {
       payloadTemplate = url;
       // A cursor of ours outranks the passive page-1 one; see cursorOurs.
-      if (cursors.length && !cursorOurs) payloadCursor = cursors[cursors.length - 1];
+      // EXCEPT the page that answers our exact next ask: a passive page
+      // requested WITH our own frontier cursor is the page the extension
+      // would buy next, so its Bottom cursor advances the frontier for
+      // free. Without this, X's co-crawl passing our replay leaves the
+      // frontier frozen behind it, and the extension re-buys pages the
+      // co-crawl already delivered (measured live on /NASA: passive
+      // pages ran past the prefill's page within one visit).
+      if (cursors.length && (!cursorOurs
+        || (reqCursor !== null && reqCursor === payloadCursor))) {
+        payloadCursor = cursors[cursors.length - 1];
+      }
     }
     // The terminate instruction, if X ever sends one. It did not on any
     // page measured, so the non-advancing cursor echo is the end signal
@@ -2136,7 +2183,7 @@ function mediaEntityOf(
 // reads `found === 0` to spot the terminal page.
 function scanApiPayload(
   node: unknown, media: ApiMedia[], cursors: string[],
-  flags?: { terminated: boolean },
+  flags?: { terminated: boolean; terminatedAny: boolean },
 ): void {
   const start = media.length;
   scanApiPayloadInto(node, media, cursors, flags);
@@ -2152,7 +2199,7 @@ function scanApiPayload(
 
 function scanApiPayloadInto(
   node: unknown, media: ApiMedia[], cursors: string[],
-  flags?: { terminated: boolean },
+  flags?: { terminated: boolean; terminatedAny: boolean },
 ): void {
   if (Array.isArray(node)) {
     // An array whose direct elements are media entities is a tweet's media
@@ -2183,9 +2230,14 @@ function scanApiPayloadInto(
   if (obj["cursorType"] === "Bottom" && typeof obj["value"] === "string") {
     cursors.push(obj["value"]);
   }
-  if (flags && obj["type"] === "TimelineTerminateTimeline"
-    && typeof obj["direction"] === "string" && obj["direction"].includes("Bottom")) {
-    flags.terminated = true;
+  if (flags && obj["type"] === "TimelineTerminateTimeline") {
+    // Any direction: a terminate on an EMPTY first page means the whole
+    // timeline is empty (see the empty-timeline end in applyPayload);
+    // only a Bottom terminate says a feed with content is over.
+    flags.terminatedAny = true;
+    if (typeof obj["direction"] === "string" && obj["direction"].includes("Bottom")) {
+      flags.terminated = true;
+    }
   }
   for (const value of Object.values(obj)) scanApiPayloadInto(value, media, cursors, flags);
 }
@@ -2277,10 +2329,22 @@ async function fetchMediaPage(
   const body: unknown = await resp.json();
   const media: ApiMedia[] = [];
   const cursors: string[] = [];
-  const flags = { terminated: false };
+  const flags = { terminated: false, terminatedAny: false };
   scanApiPayload(body, media, cursors, flags);
   const next = cursors.length ? cursors[cursors.length - 1] : null;
+  // Our own empty page carries the same soft-throttle signature the
+  // passive path reads in handleMediaPayload; on a client-cache revisit
+  // it can be the ONLY page, so it must teach softEmptyAt too.
+  if (media.length === 0) {
+    const stated = profileMediaCounts.get(gridHandle);
+    if (stated !== undefined && stated > 0) softEmptyAt = Date.now();
+  }
   if (flags.terminated) endFeed("X sent TimelineTerminateTimeline (replay)");
+  // The empty-timeline end, same signal as applyPayload's: a from-top
+  // replay answered empty AND terminated means the timeline has nothing.
+  if (flags.terminatedAny && media.length === 0 && !cursor) {
+    endFeed("empty timeline: terminated at page 1 (replay)");
+  }
   // A missing cursor is an immediate end; no shape of stall withholds the
   // cursor entirely. The ECHO is no longer ruled on here: it is ambiguous
   // (true end vs mid-feed stall, see noteCursorEcho) and the callers own
@@ -2331,29 +2395,138 @@ async function apiPrefill(): Promise<void> {
         + (ops.join(", ") || "(none)"));
       return;
     }
+    // The driver's cursor extension is already buying pages; a second
+    // ask here would be for the same cursor.
+    if (replayInFlight) return;
     // At most ONE active page of CONTENT; replays share the page's own
     // rate-limit bucket, and a multi-page prefill can empty it (429s
     // that take X's own feeds down with it). A stalled ask buys
     // nothing, and this is the only asker on an undocked tiny profile:
     // if it treats one echo as final, nothing else ever settles that
     // grid (the stall settle is dock-only).
-    let page = await fetchMediaPage(template, payloadCursor);
-    while (page.echoed && !feedEnded
-      && !noteCursorEcho(payloadCursor ?? "", "prefill replay")) {
-      await new Promise((r) => setTimeout(r, ECHO_RETRY_MS));
-      if (!active || gridHandle !== startedFor) return;
+    replayInFlight = true;
+    let page: Awaited<ReturnType<typeof fetchMediaPage>>;
+    try {
       page = await fetchMediaPage(template, payloadCursor);
+      while (page.echoed && !feedEnded
+        && !noteCursorEcho(payloadCursor ?? "", "prefill replay")) {
+        await new Promise((r) => setTimeout(r, ECHO_RETRY_MS));
+        if (!active || gridHandle !== startedFor) return;
+        page = await fetchMediaPage(template, payloadCursor);
+      }
+    } finally {
+      replayInFlight = false;
+    }
+    if (!active || gridHandle !== startedFor) return;
+    // The page's own Bottom cursor is the frontier now. Dropped, the
+    // next asker (the extension, or a drive making X re-fetch from the
+    // top) buys this same page a second time.
+    if (!page.echoed && page.next) {
+      payloadCursor = page.next;
+      cursorOurs = true;
     }
     console.info(`[xtag] mosaic prefill: +${page.added} photos via `
       + `${opNameOf(template)} replay`);
   } catch (error) {
     if (String(error).includes("429")) {
-      apiCooldownUntil = Date.now() + API_COOLDOWN_MS;
+      // noteRate429 (inside fetchMediaPage) already set the cooldown.
       console.warn("[xtag] mosaic prefill: rate limited (429); active replays "
         + "paused for 10 minutes; passive + scroll-loading continue");
     } else {
       console.warn("[xtag] mosaic prefill failed (scroll-loading still works):", error);
     }
+  }
+}
+
+// --- the GIF fallback: the combined media timeline --------------------------
+// X's media tab rides two ops now (UserPhotoTimeline / UserVideoTimeline)
+// and animated_gif posts appear in NEITHER (measured on /colordifference:
+// both filters answered empty terminated pages against a header
+// media_count of 33, and X's own views said "hasn't posted photos"). The
+// old combined UserMedia op still ships in X's bundle and still answers:
+// the photos op's features blob works on it verbatim, GIF entities
+// arrive with /photo/N expanded_urls, media_url_https and original_info
+// (so the whole mosaic pipeline handles them unchanged, play glyph
+// included), and the op has its OWN rate bucket (500/15min measured,
+// against the photos op's 50). So when the photos feed settles EMPTY,
+// one UserMedia page is fetched through the same guarded replay; if it
+// carries media, the grid re-arms on the UserMedia template and loads
+// on by cursor as usual, floor and pacing included.
+let gifFallbackTried = false;
+let fallbackSourceUrl: string | null = null;
+let userMediaQid: string | null | undefined;
+
+// The UserMedia queryId, read from X's own bundle scripts (the browser
+// already holds them in its HTTP cache, so this costs no real network
+// and nothing from any rate bucket). null = scanned and absent;
+// undefined = not scanned yet. Query ids rotate on X's deploys, which
+// is exactly why this cannot be a constant.
+async function userMediaQueryId(): Promise<string | null> {
+  if (userMediaQid !== undefined) return userMediaQid;
+  userMediaQid = null;
+  const srcs = Array.from(document.querySelectorAll<HTMLScriptElement>("script[src]"))
+    .map((s) => s.src)
+    .filter((s) => /(?:twimg|x)\.com\//.test(s));
+  for (const src of srcs) {
+    try {
+      const text = await (await fetch(src)).text();
+      const m = /queryId\s*:\s*"([\w-]+)"\s*,\s*operationName\s*:\s*"UserMedia"/.exec(text);
+      if (m) {
+        userMediaQid = m[1];
+        break;
+      }
+    } catch { /* not fetchable; try the next script */ }
+  }
+  return userMediaQid;
+}
+
+async function tryGifFallback(): Promise<void> {
+  if (gifFallbackTried || replayInFlight) return;
+  if (tiles.size > 0 || !fallbackSourceUrl) return;
+  gifFallbackTried = true;
+  const startedFor = gridHandle;
+  try {
+    const qid = await userMediaQueryId();
+    if (!qid || !active || gridHandle !== startedFor) return;
+    // The source URL is a photos-timeline request for THIS profile
+    // (handle-gated at arrival), so it carries the right userId and
+    // features; only the op segment changes. assertOwnApi still rules
+    // on the result before anything is sent.
+    const src = new URL(fallbackSourceUrl);
+    src.pathname = src.pathname.replace(/\/[^/]+\/[^/]+$/, `/${qid}/UserMedia`);
+    const template = src.toString();
+    replayInFlight = true;
+    let page: Awaited<ReturnType<typeof fetchMediaPage>>;
+    try {
+      page = await fetchMediaPage(template, null);
+    } finally {
+      replayInFlight = false;
+    }
+    if (!active || gridHandle !== startedFor) return;
+    if (page.added === 0) {
+      console.info("[xtag] mosaic: UserMedia fallback found nothing either");
+      return;
+    }
+    // The grid is a media grid from here: re-arm the loader on the
+    // UserMedia template so the cursor extension pages on as usual, and
+    // the settled empty state un-settles. Passive photos pages cannot
+    // rewind any of this (cursorOurs, and their owned count stays 0).
+    feedEnded = false;
+    feedEndReason = "";
+    exhausted = false;
+    stalls = 0;
+    emptyPages = 0;
+    noteCursorProgress();
+    payloadTemplate = template;
+    if (page.next) {
+      payloadCursor = page.next;
+      cursorOurs = true;
+    }
+    setStatus(statusLine());
+    console.info("[xtag] mosaic: photos feed empty; UserMedia fallback carried "
+      + `+${page.added} media (GIF-only profiles live there)`);
+  } catch (error) {
+    console.warn("[xtag] mosaic: UserMedia fallback failed:", error);
   }
 }
 
@@ -2473,12 +2646,31 @@ async function driveLoop(): Promise<void> {
         endFeed(`media_count ceiling (${tiles.size} tiles >= ${stated} stated)`);
       }
     }
+    // The soft-withheld EMPTY grid: X answers media pages with no media
+    // at all for a profile it counts media on (soft throttle, or
+    // server-side filtering; /colordifference served empty photo AND
+    // video timelines against media_count 33, measured live), and no
+    // end signal ever comes. The stall settle cannot reach this shape:
+    // with zero tiles the reader never docks, and the stall paths are
+    // dock-only, so the skeletons shimmered forever over "0 photos",
+    // which reads as a silent quota hit. Settle directly instead. The
+    // soft end is never cached, and any later tile clears it as always.
+    if (!exhausted && tiles.size === 0
+      && Date.now() - softEmptyAt < SOFT_EMPTY_FRESH_MS
+      && Date.now() - activatedAt > 8000) {
+      exhausted = true;
+      setStatus(settleStatus());
+    }
     // The API's own word that the timeline is over: settle NOW instead
     // of waiting out ~6s of stall patience after the last tile.
     if (feedEnded && !exhausted) {
       exhausted = true;
       setStatus(settleStatus());
     }
+    // An empty settled grid gets ONE shot at the combined media
+    // timeline; a GIF-only profile has all its media there and none on
+    // the photos op (see tryGifFallback).
+    if (exhausted && tiles.size === 0) void tryGifFallback();
     // The skeleton tail shows whenever more tiles can still arrive; not
     // while resting for the rate limit (statusLine says why instead).
     // Flipping it moves the skeletons in or out of the grid, so a real
@@ -2535,7 +2727,8 @@ async function driveLoop(): Promise<void> {
     // quiet: stalled, backed off, ended, or serving nothing new past a
     // cached frontier (a revisit's passive pages mint nothing, so the
     // gate never holds there).
-    if (willExtend && Date.now() - lastPassiveProgressAt < PASSIVE_QUIET_MS) {
+    if (willExtend && (replayInFlight
+      || Date.now() - lastPassiveProgressAt < PASSIVE_QUIET_MS)) {
       setStatus(statusLine());
       await sleep(POLL_MS);
       continue;
@@ -2590,6 +2783,7 @@ async function driveLoop(): Promise<void> {
     // back to the drive when the template goes stale (X rotates query
     // ids on deploys; the replay then 404s).
     if (willExtend && payloadTemplate && payloadCursor) {
+      replayInFlight = true;
       try {
         const page = await fetchMediaPage(payloadTemplate, payloadCursor);
         if (page.echoed) {
@@ -2631,6 +2825,8 @@ async function driveLoop(): Promise<void> {
         }
         // A 429 keeps the cursor: the pause branch owns the wait, and
         // extension resumes from the same spot after the reset.
+      } finally {
+        replayInFlight = false;
       }
       lastStepAt = Date.now();
       await sleep(drivePaceMs());
@@ -2681,6 +2877,11 @@ async function driveLoop(): Promise<void> {
       returnWindow();
     }
     lastStepAt = Date.now();
+    // The same low-budget pacing the extension path gets (drivePaceMs):
+    // each step here makes X fetch from the same bucket. The rest is
+    // held OUTSIDE the borrow, which must stay short.
+    const rest = drivePaceMs() - DRIVE_STEP_MS;
+    if (rest > 0) await sleep(rest);
   }
 }
 
@@ -2702,6 +2903,8 @@ function activate(): void {
   feedEnded = false;
   feedEndReason = "";
   emptyPages = 0;
+  gifFallbackTried = false;
+  fallbackSourceUrl = null;
   noteCursorProgress();
   activatedAt = Date.now();
   // The meter counts ONE visit. rateRemaining/rateResetAt deliberately

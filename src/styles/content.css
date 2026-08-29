@@ -25,7 +25,6 @@
      pinned overlay as the end of the grid (measured). */
   overflow: hidden;
   background: #000;
-  outline: none;
 }
 
 #xtag-grid.xtag-light { background: #fff; }
@@ -184,7 +183,7 @@ html.xtag-gridmode:not(.xtag-grid-borrowing)
     Roboto, Helvetica, Arial, sans-serif;
 }
 
-/* The quota pill (assertQuotaPill): the image quota once it runs low,
+/* The quota pill (assertQuotaPill): X's loading limit once it runs low,
    on the grid and on X's own photos view alike. Bottom of the COLUMN's
    center (left set inline); X owns both bottom corners (the message
    drawer, Grok), and the pill must never sit over their surfaces. */

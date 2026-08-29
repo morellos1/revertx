@@ -369,8 +369,8 @@ try {
   });
   await settle(page, 300);
   note = await page.evaluate(() => document.getElementById("xtag-rate-note")?.textContent ?? null);
-  check("K after a 429: the notice names the limit and the return time",
-    typeof note === "string" && note.includes("loading limit") && /\d/.test(note), note);
+  check("K after a 429: the notice names the quota and the return time",
+    typeof note === "string" && note.includes("image quota") && /\d/.test(note), note);
   // The fixture's Posts click pushes the URL without re-rendering; real
   // X re-renders the column on every route change, so mimic that.
   await page.click('a[role="tab"][href="/NASA"]');
@@ -384,7 +384,7 @@ try {
   await page.goto("https://x.com/NASA/media?filter=photo"); await settle(page);
   note = await page.evaluate(() => document.getElementById("xtag-rate-note")?.textContent ?? null);
   check("K a reload remembers the window: the notice returns without a new 429",
-    typeof note === "string" && note.includes("loading limit"), note);
+    typeof note === "string" && note.includes("image quota"), note);
 
   // L: the quota pill shows bottom-right once the window runs low
   await page.goto("https://x.com/NASA/media?filter=photo"); await settle(page);
@@ -402,12 +402,20 @@ try {
   await emitRate(17); await settle(page, 200);
   pill = await readPill();
   const fillW = await page.evaluate(() => document.querySelector("#xtag-quota .xtag-quota-fill")?.style.width ?? null);
-  check("L a low budget shows the labeled pill with count, limit and reset time",
-    typeof pill === "string" && pill.includes("Image quota 17 of 50") && /\d/.test(pill), pill);
+  // No count in the label: "17 of 50" read as 50 images, not 50 page
+  // loads. The bar carries the fraction, the text the reset time.
+  check("L a low budget shows the pill: quota named, no count, reset time",
+    typeof pill === "string" && pill.includes("image quota low")
+      && !pill.includes("of 50") && /\d/.test(pill), pill);
   check("L the bar's fill is the remaining fraction", fillW === "34%", fillW);
+  // The denominator rides the per-tab rate mirror: the bar must still
+  // draw its fraction after a reload with no fresh response seen.
+  await page.reload(); await settle(page);
+  const fillAfter = await page.evaluate(() => document.querySelector("#xtag-quota .xtag-quota-fill")?.style.width ?? null);
+  check("L a reload keeps the bar's denominator", fillAfter === "34%", fillAfter);
   await emitRate(0); await settle(page, 200);
   pill = await readPill();
-  check("L an empty budget says used up", typeof pill === "string" && pill.includes("Image quota used up"), pill);
+  check("L an empty budget says depleted", typeof pill === "string" && pill.includes("image quota depleted"), pill);
   await page.click('a[role="tab"][href="/NASA"]');
   await page.evaluate(() => document.querySelector("main").appendChild(document.createElement("div")));
   await settle(page, 300);

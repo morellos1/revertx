@@ -45,6 +45,7 @@ and returns the `.xpi`.
 | --- | --- |
 | 2.0.1 | The first Firefox build. Same code as Chrome's 2.0.1. |
 | 2.1.0 | Adds the Mosaic view. |
+| 2.2.0 | Quota fixes, the count-free "image quota" pill, and the `UserMedia` fallback for GIF-only profiles. |
 
 ## The Mosaic view (from 2.1.0)
 
@@ -53,7 +54,9 @@ differently.
 
 `data_collection_permissions` stays `{ required: ["none"] }`. The
 view's loader requests pages from x.com, in a page on x.com, with the
-user's own session, and reads the responses to lay photos out. Nothing
+user's own session, and reads the responses to lay photos out (the
+photo timeline first; x.com's combined media timeline as the one
+fallback for GIF-only profiles, same origin and same checks). Nothing
 is transmitted to the developer or a third party, which is what that
 field asks about. There is no server to transmit to.
 
