@@ -48,9 +48,10 @@ Reload x.com after a change.
 **Media tab opens** is a choice of three: the **photo grid** (X's own),
 **Mosaic**, or **Videos** (X's default). Mosaic lays photos into
 justified rows with no gaps, and a landscape photo usually gets a full
-row of its own. The Media tab's own dropdown carries the same three, and
-picking one there sets it for next time too. Press Escape in the Mosaic
-view to drop back to X's grid for that visit only.
+row of its own. Profiles that only post GIFs, which X's own Media tab
+shows as empty, get a grid too. The Media tab's own dropdown carries
+the same three, and picking one there sets it for next time too. Press
+Escape in the Mosaic view to drop back to X's grid for that visit only.
 
 While the Likes tab is on, X's History page (`/i/history`) does not work.
 Both share one X feature flag.
@@ -78,12 +79,11 @@ own photo pages fail with "Something went wrong" for the rest of the
 window. revertX then puts one line under the tab bar that says when
 photos return.
 
-One special case: X serves GIF posts on neither of the Media tab's
-feeds, so a GIF-only profile looks empty on X's own views. When X
-answers "empty" for a profile that has media, Mosaic asks X's combined
-media timeline instead: the same kind of request, with the same
-safeguards, against a separate and much larger allowance (about 500
-per 15 minutes). That is how GIF profiles get a grid at all.
+GIF posts are a special case: X serves them on neither of the Media
+tab's feeds, so a profile that only posts GIFs looks empty even on X's
+own views. When that happens, Mosaic asks X's combined media timeline
+instead. Same kind of request, same safeguards, and a separate
+allowance of about 500.
 
 If you never pick Mosaic, revertX makes no requests at all.
 
@@ -108,7 +108,8 @@ Each feature uses a different trick. None of them rewrites X's code.
   nothing on screen shifts as the page fills. Photos flow into
   justified rows with no gaps, and a photo wider than 4:3 usually takes
   the full row. The images are X's thumbnails and every tile opens X's
-  own viewer.
+  own viewer. A GIF-only profile is served from X's combined media
+  timeline, the one place X still lists GIFs.
 
 The flags are patched through an accessor on `window.__INITIAL_STATE__`.
 The popup warns when X no longer ships a flag, and the switch does nothing.

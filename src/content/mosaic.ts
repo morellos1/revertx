@@ -2052,9 +2052,13 @@ function applyPayload(url: string, body: string, srcHandle: string): void {
     // posts on NEITHER media filter. No deeper page can exist behind an
     // empty terminated page 1, so this ends the feed with no
     // media_count needed (X often omits media_count), and it is what
-    // hands the empty grid to the UserMedia fallback.
+    // hands the empty grid to the UserMedia fallback. Only while the
+    // grid is EMPTY: on a GIF profile this page arrives on EVERY visit,
+    // and a revisit restored from the cache must keep paging past its
+    // frontier, not freeze under a photos-op verdict about a grid the
+    // UserMedia template is serving.
     if (flags.terminatedAny && media.length === 0 && !reqCursor
-      && srcHandle === gridHandle) {
+      && srcHandle === gridHandle && tiles.size === 0) {
       endFeed("empty timeline: terminated at page 1");
     }
     // The template and cursor come only from a payload that provably
@@ -2342,7 +2346,10 @@ async function fetchMediaPage(
   if (flags.terminated) endFeed("X sent TimelineTerminateTimeline (replay)");
   // The empty-timeline end, same signal as applyPayload's: a from-top
   // replay answered empty AND terminated means the timeline has nothing.
-  if (flags.terminatedAny && media.length === 0 && !cursor) {
+  // Same empty-grid gate too: a sparse cache-restored grid must not be
+  // ended by the photos op's verdict.
+  if (flags.terminatedAny && media.length === 0 && !cursor
+    && tiles.size === 0) {
     endFeed("empty timeline: terminated at page 1 (replay)");
   }
   // A missing cursor is an immediate end; no shape of stall withholds the
@@ -2516,6 +2523,9 @@ async function tryGifFallback(): Promise<void> {
     exhausted = false;
     stalls = 0;
     emptyPages = 0;
+    // A photos-template failure earlier in the visit says nothing about
+    // this fresh template; without the reset the extension never pages it.
+    extendBroken = false;
     noteCursorProgress();
     payloadTemplate = template;
     if (page.next) {

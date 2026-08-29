@@ -65,10 +65,12 @@ worth a next version, not a rescue.
 >
 > Mosaic, an extra Media tab view. Off unless you pick it from the
 > tab's own dropdown. It shows the same photos at their real shapes
-> instead of square crops, in rows that fill the width. It loads more
-> photos as you scroll, the way the page itself does. X limits how much
-> an account can load at once, so it stops loading early and says when
-> loading continues; the popup notes this where you pick it.
+> instead of square crops, in rows that fill the width. Profiles that
+> only post GIFs, which X's own Media tab shows as empty, get a grid
+> too. It loads more photos as you scroll, the way the page itself
+> does. X limits how much an account can load at once, so it stops
+> loading early and says when loading continues; the popup notes this
+> where you pick it.
 >
 > revertX collects nothing, sends nothing, and has no analytics. It runs no
 > background process, asks for one permission (storage, for your switches),
