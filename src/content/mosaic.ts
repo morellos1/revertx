@@ -421,16 +421,22 @@ function placeOverlay(): void {
   // dock only exists past the header, so a window that has not even
   // scrolled the sticky bar's height cannot be docked.
   docked = tabBottom <= bar && window.scrollY > bar;
+  // WHOLE pixels, not the fractional measurements: a huge composited
+  // layer at a fractional offset is the classic source of sporadic
+  // 1px rasterization seams, and the menu-seam hunt (2026-08-28)
+  // measured the overlay at 601.672px while a hairline came and went
+  // at the strip boundary under the open dropdown. Rounding moves the
+  // overlay at most half a pixel against X's own lines.
   if (docked) {
     overlay.style.position = "fixed";
-    overlay.style.top = `${bar}px`;
+    overlay.style.top = `${Math.round(bar)}px`;
     overlay.style.bottom = "0";
     overlay.style.height = "";
   } else {
     overlay.style.position = "absolute";
-    overlay.style.top = `${window.scrollY + tabBottom}px`;
+    overlay.style.top = `${Math.round(window.scrollY + tabBottom)}px`;
     overlay.style.bottom = "";
-    overlay.style.height = `${Math.max(window.innerHeight - bar, 200)}px`;
+    overlay.style.height = `${Math.round(Math.max(window.innerHeight - bar, 200))}px`;
   }
   // Inside the column's own border lines: primaryColumn paints 1px side
   // borders (measured live) that run the full scroll length, and a
@@ -440,8 +446,8 @@ function placeOverlay(): void {
   const colStyle = getComputedStyle(col);
   const borderL = parseFloat(colStyle.borderLeftWidth) || 0;
   const borderR = parseFloat(colStyle.borderRightWidth) || 0;
-  overlay.style.left = `${rect.left + borderL}px`;
-  overlay.style.width = `${rect.width - borderL - borderR}px`;
+  overlay.style.left = `${Math.round(rect.left + borderL)}px`;
+  overlay.style.width = `${Math.round(rect.width - borderL - borderR)}px`;
   // The column's width is the layout's one input besides the ratios;
   // re-lay-out when it actually changed (resize, sidebar flex).
   if (gridEl && Math.abs(gridEl.clientWidth - lastLayoutWidth) > 1) scheduleLayout();
@@ -1132,11 +1138,6 @@ function syncMenuHole(): void {
   if (holeRaf || !open()) return;
   const tick = (): void => {
     punchHole();
-    // The glue and the ✓s ride the same frames while a menu is open
-    // over the active grid: X re-renders menu items on hover, and a
-    // batch-driven re-glue can land a frame late. Every write in
-    // assertMenuChecks is guarded, so a settled menu costs reads only.
-    assertMenuChecks();
     holeRaf = open() ? requestAnimationFrame(tick) : 0;
   };
   holeRaf = requestAnimationFrame(tick);
@@ -2682,10 +2683,15 @@ async function driveLoop(): Promise<void> {
     // the photos op (see tryGifFallback).
     if (exhausted && tiles.size === 0) void tryGifFallback();
     // The skeleton tail shows whenever more tiles can still arrive; not
-    // while resting for the rate limit (statusLine says why instead).
-    // Flipping it moves the skeletons in or out of the grid, so a real
-    // flip re-lays-out.
-    const loadingNow = !exhausted && !ratePauseUntil();
+    // while resting for the rate limit (statusLine says why instead),
+    // and not while an END PROBE is running: the first cursor echo is
+    // nearly always the true end, and the 3x retry protocol that
+    // confirms it (kept for the rare mid-feed stall; see noteCursorEcho)
+    // takes seconds of widening waits. So the tail settles on echo one
+    // and the retries continue silently; a retry that recovers content
+    // resets stallCount and the tail returns. Flipping the class moves
+    // the skeletons in or out of the grid, so a real flip re-lays-out.
+    const loadingNow = !exhausted && !ratePauseUntil() && stallCount === 0;
     if (overlay!.classList.contains("xtag-grid-loading") !== loadingNow) {
       overlay!.classList.toggle("xtag-grid-loading", loadingNow);
       scheduleLayout();
@@ -3113,8 +3119,9 @@ function assertMenuChecks(): void {
   // this very function had hidden.
   const check = clone.querySelector("svg");
   if (check) {
-    // X's own glyph, shown while the grid is up; write-on-change, this
-    // runs per frame while a menu is open.
+    // X's own glyph, shown while the grid is up; write-on-change,
+    // re-asserted per mutation batch (a hover re-render mutates, and
+    // observer callbacks run before that frame paints).
     const want = active ? "visible" : "hidden";
     if (check.style.visibility !== want) check.style.visibility = want;
     setItemText(clone, GRID_TAB_LABEL);

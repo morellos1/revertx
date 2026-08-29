@@ -46,6 +46,7 @@ and returns the `.xpi`.
 | 2.0.1 | The first Firefox build. Same code as Chrome's 2.0.1. |
 | 2.1.0 | Adds the Mosaic view. |
 | 2.2.0 | Quota fixes, the count-free "image quota" pill, and the `UserMedia` fallback for GIF-only profiles. |
+| 2.2.1 | The dropdown hairline (whole-pixel overlay placement) and the instant end-of-profile settle. |
 
 ## The Mosaic view (from 2.1.0)
 

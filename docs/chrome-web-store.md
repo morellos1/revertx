@@ -30,6 +30,7 @@ worth a next version, not a rescue.
 | 2.0.1 | X's own layouts. The first 2.x the store publishes. |
 | 2.1.0 | Adds the Mosaic view. Everything under "The Mosaic view" below applies from this version. |
 | 2.2.0 | Quota fixes (no page is ever bought twice), the "image quota" pill loses its misread count, and GIF-only profiles get a grid via the `UserMedia` fallback described below. |
+| 2.2.1 | The hairline over the media dropdown (the overlay's composited layer leaked one pixel row at a fractional offset; it sits on whole pixels now), and the end of a profile settles at once instead of after the retry protocol. |
 
 ## Listing
 
