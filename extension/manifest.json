@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "revertX",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "Restores what X removed: the Media tab's photo grid, the Likes tab on your profile, the photo grid in posts, and Copy link first.",
   "icons": {
     "16": "icons/icon16.png",
