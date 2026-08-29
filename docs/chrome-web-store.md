@@ -208,7 +208,7 @@ collected; if asked, point at the Privacy section of the README.
 | `02-likes-tab.png` | Likes tab back on your own profile |
 | `03-post-grid.png` | Posts with 2, 3 or 4 images back in the old grid |
 | `04-share-menu.png` | Copy link back on top |
-| `05-mosaic.png` | Mosaic shows every photo at its own shape |
+| `05-mosaic.png` | New “Mosaic” dynamic photo grid |
 
 Captions are rendered into the image; the store has no caption field.
 Each one is a caption column beside a page-only capture of live x.com
