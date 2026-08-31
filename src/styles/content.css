@@ -13,9 +13,13 @@
      on document.body (the one parent React never reconciles), so it needs
      its own stacking. */
   z-index: 1000;
-  /* The menu hole grows and collapses in step with X's dropdown fade
-     (see setHole); Chrome interpolates same-structure path() values.
-     Only clip-path: the placement writes must never animate. */
+  /* The hole grows in step with its host's OPEN fade (see setHole);
+     Chrome interpolates same-structure path() values. The close is a
+     snap: the clip clears to none, which no transition can stretch
+     (measured: the dropdown unmounts with no exit fade, and the hover
+     card fades itself out first; an animated collapse painted a
+     shrinking box after the host was gone). Only clip-path: the
+     placement writes must never animate. */
   transition: clip-path 150ms ease;
   /* NO internal scroll, in either mode. `overflow: hidden` refuses the
      wheel, so it chains straight out to the page, while leaving the box

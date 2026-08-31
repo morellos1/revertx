@@ -909,21 +909,22 @@ function buildOverlay(): void {
 // and it reads far better than a frame of feed.
 let holeRaf = 0;
 let holePath = "";
-// The hole fades with the menu. Measured on the live menu: X opens its
-// dropdowns with a pure OPACITY fade; the panel's box is at full size
-// from the first frame. A hole cut in one frame shows tiles snapping to
-// black and only then a menu fading in over the black; two stages where
-// X's own menus have one. Chrome interpolates same-structure path()
-// values in clip-path (verified with a seeked Web Animation; a
-// transition on a hidden tab shows nothing), so the hole GROWS from a
-// point at the panel's center under a 150ms clip-path transition
-// (content.css), in step with the fade, and collapses shut the same
-// way when the menu goes.
-const HOLE_MS = 150;
-let holeClearTimer = 0;
-// The last hole's center, in the overlay's own coordinates: the
-// collapse target when the menu disappears.
-let holeCenter: { x: number; y: number } | null = null;
+// The hole fades with its host ON OPEN ONLY. Measured on the live menu:
+// X opens its dropdowns with a pure OPACITY fade; the panel's box is at
+// full size from the first frame. A hole cut in one frame shows tiles
+// snapping to black and only then a menu fading in over the black; two
+// stages where X's own menus have one. Chrome interpolates
+// same-structure path() values in clip-path (verified with a seeked
+// Web Animation; a transition on a hidden tab shows nothing), so the
+// hole GROWS from a point at the panel's center under a 150ms
+// clip-path transition (content.css), in step with the fade.
+//
+// The CLOSE is a SNAP, never a transition. Measured on the live page,
+// both hosts: the dropdown unmounts in the SAME FRAME as its backdrop
+// click, no exit fade at all; the hover card fades ITSELF out before
+// unmounting. Either way the host is visually gone by the time the
+// clip clears, and the old 150ms collapse painted a panel-shaped box
+// of page background shrinking over the tiles after the fact.
 // Frames in a row that measured no hole. The loop below runs while a menu
 // node exists, so this is its stop: a node that never yields a panel is
 // not an open dropdown, and a per-frame measure must not outlive it. One
@@ -1016,8 +1017,8 @@ function hoverSheet(card: HTMLElement): HTMLElement | null {
 // the first or last node: X leaves menu nodes mounted elsewhere in
 // #layers, and picking one of those aims the hole away from the panel
 // the reader just opened.
-function holePanel(o: DOMRect): { rect: DOMRect; radius: number } | null {
-  let panel: { rect: DOMRect; radius: number } | null = null;
+function holePanel(o: DOMRect): { rect: DOMRect; radius: number; el: HTMLElement } | null {
+  let panel: { rect: DOMRect; radius: number; el: HTMLElement } | null = null;
   let best = 0;
   for (const menu of Array.from(document.querySelectorAll<HTMLElement>('[role="menu"]'))) {
     const items = itemsBox(menu);
@@ -1027,8 +1028,8 @@ function holePanel(o: DOMRect): { rect: DOMRect; radius: number } | null {
     const fits = rect.width > 0 && rect.height > 0
       && rect.width * rect.height <= items.width * items.height * 4;
     const candidate = fits
-      ? { rect, radius: radiusOf(sheet) }
-      : { rect: pad(items, 8), radius: 12 };
+      ? { rect, radius: radiusOf(sheet), el: sheet }
+      : { rect: pad(items, 8), radius: 12, el: menu };
     const overlap = overlapArea(candidate.rect, o);
     if (overlap > best) {
       panel = candidate;
@@ -1041,7 +1042,7 @@ function holePanel(o: DOMRect): { rect: DOMRect; radius: number } | null {
     const rect = sheet.getBoundingClientRect();
     const overlap = overlapArea(rect, o);
     if (overlap > best) {
-      panel = { rect, radius: radiusOf(sheet) };
+      panel = { rect, radius: radiusOf(sheet), el: sheet };
       best = overlap;
     }
   }
@@ -1088,22 +1089,13 @@ function collapsedHole(x: number, y: number): string {
 
 function setHole(path: string, center: { x: number; y: number } | null = null): void {
   if (!overlay || path === holePath) return;
-  window.clearTimeout(holeClearTimer);
-  holeClearTimer = 0;
   if (path === "") {
-    // Collapse shut where the hole was, then drop the clip entirely
-    // once the transition has run; an overlay with no menu open must
-    // not keep a clip-path for the compositor to chew on.
+    // The snap: writing '' cannot be stretched by the transition in
+    // content.css, because path() and none do not interpolate, so the
+    // tiles return whole in the same frame. An overlay with no hole
+    // must not keep a clip-path for the compositor to chew on.
     holePath = "";
-    if (holeCenter) {
-      overlay.style.clipPath = collapsedHole(holeCenter.x, holeCenter.y);
-      const el = overlay;
-      holeClearTimer = window.setTimeout(() => {
-        if (overlay === el && holePath === "") el.style.clipPath = "";
-      }, HOLE_MS + 40);
-    } else {
-      overlay.style.clipPath = "";
-    }
+    overlay.style.clipPath = "";
     return;
   }
   // Grow from nothing: a fresh hole seeds its collapsed shape first and
@@ -1114,7 +1106,6 @@ function setHole(path: string, center: { x: number; y: number } | null = null): 
   }
   holePath = path;
   overlay.style.clipPath = path;
-  if (center) holeCenter = center;
 }
 
 // How long a mounted menu may measure EMPTY before the hole collapses.
@@ -1125,10 +1116,34 @@ function setHole(path: string, center: { x: number; y: number } | null = null): 
 // emptied.
 const HOLE_EMPTY_GRACE = 10;
 
+// The exit fade, watched per frame. The hover card does not just
+// unmount on pointer-off: it holds a beat, then a JS-driven opacity
+// fade on a WRAPPER above the sheet runs to 0, and only then the node
+// goes (measured live; no CSS transition is declared anywhere in the
+// chain, so the per-frame computed opacity is the only signal there
+// is). Behind a fading card the hole shows page background, not tiles,
+// so the hole must leave the moment the fade STARTS, not when the node
+// does. Falling opacity means leaving: snap shut now. Rising means
+// arriving (the open fade, where the hole grows in step): keep
+// cutting. The sheet element anchors the baseline; a new host, or a
+// React rewrap swapping the node, starts fresh.
+let holeOpEl: HTMLElement | null = null;
+let holeOpLast = -1;
+let holeClosing = false;
+
+function effectiveOpacity(el: HTMLElement): number {
+  let o = 1;
+  for (let n: HTMLElement | null = el; n && n !== document.body; n = n.parentElement) {
+    o *= parseFloat(getComputedStyle(n).opacity);
+  }
+  return o;
+}
+
 function punchHole(): void {
   if (!overlay) return;
   if (!active || !onPhotosFeed()) {
     holeIdle++;
+    holeOpEl = null;
     setHole("");
     return;
   }
@@ -1136,8 +1151,9 @@ function punchHole(): void {
   const panel = holePanel(o);
   if (!panel) {
     holeIdle++;
-    // No host node at all is a CLOSE: collapse now (the loop stops with
-    // the node gone, so a deferred collapse would strand the hole). A
+    holeOpEl = null;
+    // No host node at all is a CLOSE: snap shut now (the loop stops with
+    // the node gone, so a deferred close would strand the hole). A
     // MOUNTED host measuring empty is React swapping its items; hold
     // through the grace instead.
     if (!document.querySelector(HOLE_HOSTS) || holeIdle > HOLE_EMPTY_GRACE) {
@@ -1146,6 +1162,21 @@ function punchHole(): void {
     return;
   }
   holeIdle = 0;
+  if (panel.el !== holeOpEl) {
+    holeOpEl = panel.el;
+    holeOpLast = -1;
+    holeClosing = false;
+  }
+  const op = effectiveOpacity(panel.el);
+  if (holeOpLast >= 0) {
+    if (op < holeOpLast - 0.001) holeClosing = true;
+    else if (op > holeOpLast + 0.001) holeClosing = false;
+  }
+  holeOpLast = op;
+  if (holeClosing) {
+    setHole("");
+    return;
+  }
   const m = panel.rect;
   // The overlapping part decides WHETHER to clip: a menu outside the
   // overlay's box (sidebar menus, the account switcher) overlaps nothing
@@ -3047,9 +3078,7 @@ function deactivate(restoreScroll = true): void {
   // The next activation builds a fresh overlay with no clip on it; a stale
   // path here would make setHole skip the first write to that new element.
   holePath = "";
-  holeCenter = null;
-  window.clearTimeout(holeClearTimer);
-  holeClearTimer = 0;
+  holeOpEl = null;
   document.documentElement.classList.remove("xtag-gridmode");
   // The tab goes back to X's own label ("Photos") the moment the grid is
   // no longer the view on screen.

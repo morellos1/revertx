@@ -47,7 +47,7 @@ and returns the `.xpi`.
 | 2.1.0 | Adds the Mosaic view. |
 | 2.2.0 | Quota fixes, the count-free "image quota" pill, and the `UserMedia` fallback for GIF-only profiles. |
 | 2.2.1 | The dropdown hairline (whole-pixel overlay placement) and the instant end-of-profile settle. |
-| 2.2.2 | The profile hover card shows over the Mosaic (the dropdowns' clip hole, extended to it). |
+| 2.2.2 | The profile hover card shows over the Mosaic (the dropdowns' clip hole, extended to it), and the hole's close is a one-frame snap. |
 
 ## The Mosaic view (from 2.1.0)
 
