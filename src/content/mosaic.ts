@@ -876,7 +876,7 @@ function buildOverlay(): void {
   placeOverlay();
 }
 
-// --- the menu hole ---------------------------------------------------------
+// --- the hole: menus and the hover card -------------------------------------
 // A menu can never paint ABOVE a body-level overlay (#layers is a z:1
 // context nested inside react-root's z:0; measured), and hiding the
 // whole grid for an open dropdown reads as a view switch. So the
@@ -885,6 +885,14 @@ function buildOverlay(): void {
 // neither paints nor hit-tests, so the menu shows through and takes its
 // own clicks. Re-measured per frame while open; X's menus animate in,
 // so the rect moves without any DOM mutation to observe.
+//
+// The profile hover card (the preview X opens over any @handle) is the
+// same problem in the same place: it mounts in #layers, so with the
+// grid up it painted UNDER the tiles wherever the two overlapped. It
+// takes the same hole, and competes on the same overlap terms. Its
+// testid node paints the visible sheet itself (opaque background, 16px
+// radius; measured), so its measure is a downward walk where the menus
+// walk upward from their items.
 //
 // The hole is cut to the SHEET, not to [role=menu]. A hole bigger than
 // the panel it exposes uncovers the photos feed, two ways:
@@ -922,6 +930,10 @@ let holeCenter: { x: number; y: number } | null = null;
 // second is far longer than any X menu takes to animate in.
 let holeIdle = 0;
 const HOLE_IDLE_FRAMES = 60;
+
+// Everything in #layers that earns a hole. One selector, so presence
+// checks and the panel scan can never disagree about what counts.
+const HOLE_HOSTS = '[role="menu"], [data-testid="HoverCard"]';
 
 // A background the reader cannot see through. The panel paints one; the
 // layers wrapping it do not.
@@ -973,11 +985,38 @@ function radiusOf(el: HTMLElement): number {
   return Number.isFinite(r) ? r : 0;
 }
 
-// The open menu's panel box, in viewport coordinates. The panel that
-// OVERLAPS THE GRID MOST wins, never simply the first or last node: X
-// leaves menu nodes mounted elsewhere in #layers, and picking one of those
-// aims the hole away from the dropdown the reader just opened.
-function menuPanel(o: DOMRect): { rect: DOMRect; radius: number } | null {
+// The visible card inside a hover-card layer. The testid node paints the
+// sheet itself today, so the walk usually ends on its first step; the
+// descent is for the day X wraps it in a positioned layer again: follow
+// the largest child down until a node paints a background, the same
+// test the menus use. Buttons inside the card paint their own
+// backgrounds too, but a button is never the largest box on the spine.
+function hoverSheet(card: HTMLElement): HTMLElement | null {
+  for (let node: HTMLElement | null = card; node;) {
+    const r = node.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return null;
+    if (paintsBackground(node)) return node;
+    let next: HTMLElement | null = null;
+    let bestArea = 0;
+    for (const child of Array.from(node.children)) {
+      if (!(child instanceof HTMLElement)) continue;
+      const cr = child.getBoundingClientRect();
+      if (cr.width * cr.height > bestArea) {
+        bestArea = cr.width * cr.height;
+        next = child;
+      }
+    }
+    node = next;
+  }
+  return null;
+}
+
+// The open panel's box, in viewport coordinates: a dropdown's sheet or a
+// hover card's. The panel that OVERLAPS THE GRID MOST wins, never simply
+// the first or last node: X leaves menu nodes mounted elsewhere in
+// #layers, and picking one of those aims the hole away from the panel
+// the reader just opened.
+function holePanel(o: DOMRect): { rect: DOMRect; radius: number } | null {
   let panel: { rect: DOMRect; radius: number } | null = null;
   let best = 0;
   for (const menu of Array.from(document.querySelectorAll<HTMLElement>('[role="menu"]'))) {
@@ -993,6 +1032,16 @@ function menuPanel(o: DOMRect): { rect: DOMRect; radius: number } | null {
     const overlap = overlapArea(candidate.rect, o);
     if (overlap > best) {
       panel = candidate;
+      best = overlap;
+    }
+  }
+  for (const card of Array.from(document.querySelectorAll<HTMLElement>('[data-testid="HoverCard"]'))) {
+    const sheet = hoverSheet(card);
+    if (!sheet) continue;
+    const rect = sheet.getBoundingClientRect();
+    const overlap = overlapArea(rect, o);
+    if (overlap > best) {
+      panel = { rect, radius: radiusOf(sheet) };
       best = overlap;
     }
   }
@@ -1084,14 +1133,14 @@ function punchHole(): void {
     return;
   }
   const o = overlay.getBoundingClientRect();
-  const panel = menuPanel(o);
+  const panel = holePanel(o);
   if (!panel) {
     holeIdle++;
-    // No menu node at all is a CLOSE: collapse now (the loop stops with
+    // No host node at all is a CLOSE: collapse now (the loop stops with
     // the node gone, so a deferred collapse would strand the hole). A
-    // MOUNTED menu measuring empty is React swapping its items; hold
+    // MOUNTED host measuring empty is React swapping its items; hold
     // through the grace instead.
-    if (!document.querySelector('[role="menu"]') || holeIdle > HOLE_EMPTY_GRACE) {
+    if (!document.querySelector(HOLE_HOSTS) || holeIdle > HOLE_EMPTY_GRACE) {
       setHole("");
     }
     return;
@@ -1120,21 +1169,21 @@ function punchHole(): void {
     { x: (x1 + x2) / 2, y: (y1 + y2) / 2 });
 }
 
-// The loop runs while a MENU is open, not while a hole exists. X's
-// dropdown animates in, and mid-animation its items measure 0x0; so the
-// first punch after the menu mounts finds nothing to cut. Keyed on the
-// hole, the loop never starts, and the menu stays buried under the grid
-// until the next mutation batch happens to punch again. Keyed on the
-// menu, the next frame measures the finished panel and the hole opens
-// on its own.
-function syncMenuHole(): void {
+// The loop runs while a HOST is mounted (a menu or a hover card), not
+// while a hole exists. X's dropdown animates in, and mid-animation its
+// items measure 0x0; so the first punch after the menu mounts finds
+// nothing to cut. Keyed on the hole, the loop never starts, and the
+// menu stays buried under the grid until the next mutation batch
+// happens to punch again. Keyed on the host, the next frame measures
+// the finished panel and the hole opens on its own.
+function syncHole(): void {
   // A mutation batch with no loop running is a fresh look at the page: give
-  // the next menu its full patience again.
+  // the next host its full patience again.
   if (!holeRaf) holeIdle = 0;
   punchHole();
   const open = (): boolean => Boolean(overlay) && active
     && holeIdle <= HOLE_IDLE_FRAMES
-    && document.querySelector('[role="menu"]') !== null;
+    && document.querySelector(HOLE_HOSTS) !== null;
   if (holeRaf || !open()) return;
   const tick = (): void => {
     punchHole();
@@ -3380,12 +3429,12 @@ export function initMosaic(): void {
     if (active) placeOverlay();
     // The tab wears the grid's name while the grid is the view on
     // screen, X's ✓ stays off the Photos item (React re-renders restore
-    // both, so re-assert per batch), an open menu gets its clip-path
-    // hole (see punchHole), and a rate-limited native photos view gets
-    // its notice.
+    // both, so re-assert per batch), an open menu or hover card gets
+    // its clip-path hole (see punchHole), and a rate-limited native
+    // photos view gets its notice.
     assertTabLabel();
     assertMenuChecks();
-    syncMenuHole();
+    syncHole();
     assertRateNotice();
     assertQuotaPill();
   });

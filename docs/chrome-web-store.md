@@ -31,6 +31,7 @@ worth a next version, not a rescue.
 | 2.1.0 | Adds the Mosaic view. Everything under "The Mosaic view" below applies from this version. |
 | 2.2.0 | Quota fixes (no page is ever bought twice), the "image quota" pill loses its misread count, and GIF-only profiles get a grid via the `UserMedia` fallback described below. |
 | 2.2.1 | The hairline over the media dropdown (the overlay's composited layer leaked one pixel row at a fractional offset; it sits on whole pixels now), and the end of a profile settles at once instead of after the retry protocol. |
+| 2.2.2 | The profile hover card shows over the Mosaic. It mounts in X's `#layers`, which can never paint above the overlay, so the overlay clips the same hole for it that dropdowns get. |
 
 ## Listing
 

@@ -60,10 +60,10 @@ html.xtag-gridmode:not(.xtag-grid-borrowing)
 }
 
 /* The grid steps aside while the photo viewer route is up (its close
-   returns here), keeping all its state. Open dropdowns do not hide it:
-   punchHole clips a hole for the menu instead, because menus can never
-   paint above a body-level overlay (#layers is a z:1 context nested inside
-   react-root's z:0, measured). */
+   returns here), keeping all its state. Open dropdowns and the profile
+   hover card do not hide it: punchHole clips a hole for them instead,
+   because nothing in #layers can ever paint above a body-level overlay
+   (#layers is a z:1 context nested inside react-root's z:0, measured). */
 #xtag-grid.xtag-grid-viewing { visibility: hidden; }
 
 /* Nothing measured yet = nothing to show: on a fresh page load X has
