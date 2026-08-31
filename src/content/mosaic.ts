@@ -80,8 +80,8 @@ const PAGE_COUNT = 20;
 // TimelineTerminateTimeline at all. The end is the page AFTER the last
 // one: a few hundred bytes of cursor-only entries whose Bottom cursor
 // equals the cursor that asked for it. That is the signal every path
-// keys off (applyPayload's non-advancing-cursor check, and
-// fetchMediaPage's for our own replays). It costs one page fetch at the
+// keys off (judgePage's non-advancing-cursor check, shared by the
+// passive path and our own replays). It costs one page fetch at the
 // true end, which X's own feed makes anyway on an undocked profile.
 // --- the rate-limit floor --------------------------------------------------
 // Even fully passive, the driver makes X fetch pages at machine speed, and
@@ -2024,6 +2024,20 @@ let softEmptyAt = 0;
 let softEmptyHandle = "";
 const SOFT_EMPTY_FRESH_MS = 5 * 60_000;
 
+// The one writer of that signature, shared by both readers of a
+// timeline page: an empty photos answer counts as the throttle shape
+// only for a profile X itself counts media on. Each caller decides
+// what "empty" means for its page (handleMediaPayload string-scans the
+// raw body pre-parse, fetchMediaPage rules out the end-of-feed echo
+// first).
+function teachSoftEmpty(handle: string): void {
+  const stated = profileMediaCounts.get(handle);
+  if (stated !== undefined && stated > 0) {
+    softEmptyAt = Date.now();
+    softEmptyHandle = handle;
+  }
+}
+
 // --- the quota pill --------------------------------------------------------
 // The loading-limit pill, where the reader can see it while scrolling:
 // once the window runs low (the same threshold that slows our pages), a
@@ -2144,6 +2158,108 @@ function requestCursorOf(url: string): string | null {
   }
 }
 
+// --- one verdict per timeline page ------------------------------------------
+// Two interpreters read timeline pages: applyPayload for the pages X's
+// own client fetches (the passive path), and fetchMediaPage for our
+// replays. They used to hold separate copies of these rules, and fixes
+// landed one-sided; this is the one copy now. The rules:
+//
+//   - The non-advancing cursor (measured live): X can end a timeline
+//     with NO terminate instruction at all; the terminal page is
+//     cursor-only entries whose Bottom cursor EQUALS the cursor that
+//     requested it. A mid-feed cursor-only page (the deleted-tweets
+//     shape the empty-page distrust exists for) always ADVANCES its
+//     cursor, so bottom == requested can only mean "nothing past
+//     here". Ambiguous even so: true end or mid-feed stall (see
+//     noteCursorEcho).
+//   - The progress reset: any page with content clears the stall
+//     count; the echo it was counting is either resolved or beside
+//     the point now.
+//   - The empty-terminated page 1: X can TERMINATE an empty FIRST
+//     page outright (direction "Top"; measured on /colordifference:
+//     an 802-byte page of two cursor entries and no media at all,
+//     against a header media_count of 33). A GIF-only profile looks
+//     exactly like this: X serves animated_gif posts on NEITHER media
+//     filter. No deeper page can exist behind an empty terminated
+//     page 1, so this ends the feed with no media_count needed (X
+//     often omits media_count), and it is what hands the empty grid
+//     to the UserMedia fallback. Only while the grid is EMPTY: on a
+//     GIF profile this page arrives on EVERY visit, and a revisit
+//     restored from the cache must keep paging past its frontier, not
+//     freeze under a photos-op verdict about a grid the UserMedia
+//     template is serving.
+//   - The terminate instruction, if X ever sends one. It did not on
+//     any page measured, so the cursor echo is the end signal that
+//     does the work; but a payload that DOES say terminate is still
+//     saying the timeline is over. A page's SIZE says nothing: a
+//     sparse page mid-feed is the normal shape of a photos timeline
+//     filtered server-side.
+//
+// The paths differ for real reasons, and those stay visible as gates
+// instead of re-forking the rules:
+//
+//   - handleOk: the passive path trusts a page only when it ARRIVED
+//     under this profile's URL (recorded at interception time); a
+//     stale buffered page from a previously-viewed profile must never
+//     end this feed or vote on its cursor. A replay passes true; what
+//     it fetched can still be foreign, which the next gate rules on.
+//   - terminateNeedsOwnedOrEmpty: the replay's template can be
+//     another profile's request (the resource-timing lookback), so
+//     its terminate rule also requires the page to be provably this
+//     grid's (owned > 0) or to carry nothing foreign at all (empty).
+//   - echoVoteSource: non-null means an echo votes straight into
+//     noteCursorEcho under this label, gated on the frontier: X's own
+//     client retries ITS stalled cursors, and those retries must not
+//     vote on OUR frontier when the replay chain is already deeper
+//     (cursorOurs); only an echo of the cursor we would ask with next
+//     is evidence about our end. null means only report the shape:
+//     fetchMediaPage's callers own the 3x retry protocol.
+//   - reasonPrecedence: an empty page 1 terminated in BOTH senses
+//     (terminatedAny plus a Bottom terminate) fires both ends, and
+//     endFeed records only the FIRST reason; feedEnded is the same
+//     either way, but settleStatus reads the reason. Kept exactly as
+//     each path had it: empty-timeline first on the passive path,
+//     terminate first on the replay path.
+function judgePage(
+  media: ApiMedia[], cursors: string[],
+  flags: { terminated: boolean; terminatedAny: boolean },
+  askedCursor: string | null,
+  gates: {
+    handleOk: boolean;
+    terminateNeedsOwnedOrEmpty: boolean;
+    echoVoteSource: string | null;
+    reasonPrecedence: "empty-timeline" | "terminate";
+    reasonSuffix: string;
+  },
+): { owned: number; next: string | null; echoed: boolean } {
+  const next = cursors.length ? cursors[cursors.length - 1] : null;
+  // The pre-dedupe OWNED count: how much of this page provably belongs
+  // to the grid's profile. A page that owns nothing must not steer
+  // this feed's cursor or its end.
+  const owned = media.filter((m) => ownedByGrid(m.href)).length;
+  const echoed = media.length === 0 && next !== null && next === askedCursor;
+  const echoVote = gates.echoVoteSource;
+  if (echoed && askedCursor !== null && gates.handleOk && echoVote !== null
+    && (!cursorOurs || askedCursor === payloadCursor)) {
+    noteCursorEcho(askedCursor, echoVote);
+  }
+  if (media.length > 0) noteCursorProgress();
+  const emptyTimeline = flags.terminatedAny && media.length === 0
+    && !askedCursor && gates.handleOk && tiles.size === 0;
+  const terminated = flags.terminated && gates.handleOk
+    && (!gates.terminateNeedsOwnedOrEmpty || owned > 0 || media.length === 0);
+  const emptyReason = `empty timeline: terminated at page 1${gates.reasonSuffix}`;
+  const termReason = `X sent TimelineTerminateTimeline${gates.reasonSuffix}`;
+  if (gates.reasonPrecedence === "empty-timeline") {
+    if (emptyTimeline) endFeed(emptyReason);
+    if (terminated) endFeed(termReason);
+  } else {
+    if (terminated) endFeed(termReason);
+    if (emptyTimeline) endFeed(emptyReason);
+  }
+  return { owned, next, echoed };
+}
+
 function applyPayload(url: string, body: string, srcHandle: string): void {
   try {
     const parsed: unknown = JSON.parse(body);
@@ -2165,52 +2281,22 @@ function applyPayload(url: string, body: string, srcHandle: string): void {
       // needs to ask the combined media timeline instead.
       fallbackSourceUrl = url;
     }
-    const owned = media.filter((m) => ownedByGrid(m.href)).length;
-    // The non-advancing cursor (measured live): X can end a timeline
-    // with NO terminate instruction at all; the terminal page is
-    // cursor-only entries whose Bottom cursor EQUALS the cursor that
-    // requested it. A mid-feed cursor-only page (the deleted-tweets
-    // shape the empty-page distrust exists for) always ADVANCES its
-    // cursor, so bottom == requested can only mean "nothing past here".
-    // Gated on the handle the payload ARRIVED under (recorded at
-    // interception time), so a stale buffered page from a
-    // previously-viewed profile can never end this one's feed.
     const reqCursor = requestCursorOf(url);
-    if (media.length === 0 && srcHandle === gridHandle && cursors.length) {
-      if (reqCursor && cursors[cursors.length - 1] === reqCursor) {
-        // X's own client retries ITS stalled cursors; those retries land
-        // here as identical echoes and must not vote on OUR frontier when
-        // the replay chain is already deeper (cursorOurs). Only an echo
-        // of the cursor we would ask with next is evidence about our end.
-        if (!cursorOurs || reqCursor === payloadCursor) {
-          noteCursorEcho(reqCursor, "passive page");
-        }
-      }
-    }
-    // Any page with content clears the stall count: the echo it was
-    // counting is either resolved or beside the point now.
-    if (media.length > 0) noteCursorProgress();
-    // X can TERMINATE an empty FIRST page outright (direction "Top";
-    // measured on /colordifference: an 802-byte page of two cursor
-    // entries and no media at all, against a header media_count of 33).
-    // A GIF-only profile looks exactly like this: X serves animated_gif
-    // posts on NEITHER media filter. No deeper page can exist behind an
-    // empty terminated page 1, so this ends the feed with no
-    // media_count needed (X often omits media_count), and it is what
-    // hands the empty grid to the UserMedia fallback. Only while the
-    // grid is EMPTY: on a GIF profile this page arrives on EVERY visit,
-    // and a revisit restored from the cache must keep paging past its
-    // frontier, not freeze under a photos-op verdict about a grid the
-    // UserMedia template is serving.
-    if (flags.terminatedAny && media.length === 0 && !reqCursor
-      && srcHandle === gridHandle && tiles.size === 0) {
-      endFeed("empty timeline: terminated at page 1");
-    }
+    // The shared page rules (see judgePage). This path votes echoes
+    // itself, and every end signal and echo vote is gated on the
+    // handle the payload ARRIVED under.
+    const page = judgePage(media, cursors, flags, reqCursor, {
+      handleOk: srcHandle === gridHandle,
+      terminateNeedsOwnedOrEmpty: false,
+      echoVoteSource: "passive page",
+      reasonPrecedence: "empty-timeline",
+      reasonSuffix: "",
+    });
     // The template and cursor come only from a payload that provably
     // belongs to THIS profile (owned > 0): the buffer holds payloads for
     // minutes now, so a stale entry from a previously-viewed profile must
     // not arm the replay/cursor machinery with a foreign template.
-    if (owned > 0) {
+    if (page.owned > 0) {
       payloadTemplate = url;
       // A cursor of ours outranks the passive page-1 one; see cursorOurs.
       // EXCEPT the page that answers our exact next ask: a passive page
@@ -2220,20 +2306,10 @@ function applyPayload(url: string, body: string, srcHandle: string): void {
       // frontier frozen behind it, and the extension re-buys pages the
       // co-crawl already delivered (measured live on /NASA: passive
       // pages ran past the prefill's page within one visit).
-      if (cursors.length && (!cursorOurs
+      if (page.next !== null && (!cursorOurs
         || (reqCursor !== null && reqCursor === payloadCursor))) {
-        payloadCursor = cursors[cursors.length - 1];
+        payloadCursor = page.next;
       }
-    }
-    // The terminate instruction, if X ever sends one. It did not on any
-    // page measured, so the non-advancing cursor echo is the end signal
-    // that does the work; but a payload that DOES say terminate is still
-    // saying the timeline is over. A page's SIZE says nothing: a sparse
-    // page mid-feed is the normal shape of a photos timeline filtered
-    // server-side. Handle-gated like every other end signal here: a
-    // stale buffered page from another profile must not end this feed.
-    if (flags.terminated && srcHandle === gridHandle) {
-      endFeed("X sent TimelineTerminateTimeline");
     }
   } catch (error) {
     console.warn("[xtag] media payload parse failed:", error);
@@ -2249,13 +2325,7 @@ function handleMediaPayload(url: string, body: string): void {
   // buffers payloads unparsed, and the native view is exactly where
   // the soft note lives): a photos page carrying no media at all, for
   // a profile X itself counts media on. A string scan, not a parse.
-  if (!body.includes('"media_url_https"')) {
-    const stated = profileMediaCounts.get(srcHandle);
-    if (stated !== undefined && stated > 0) {
-      softEmptyAt = Date.now();
-      softEmptyHandle = srcHandle;
-    }
-  }
+  if (!body.includes('"media_url_https"')) teachSoftEmpty(srcHandle);
   if (active) {
     applyPayload(url, body, srcHandle);
     return;
@@ -2387,7 +2457,7 @@ function scanApiPayloadInto(
   }
   if (flags && obj["type"] === "TimelineTerminateTimeline") {
     // Any direction: a terminate on an EMPTY first page means the whole
-    // timeline is empty (see the empty-timeline end in applyPayload);
+    // timeline is empty (see the empty-timeline end in judgePage);
     // only a Bottom terminate says a feed with content is over.
     flags.terminatedAny = true;
     if (typeof obj["direction"] === "string" && obj["direction"].includes("Bottom")) {
@@ -2494,49 +2564,36 @@ async function fetchMediaPage(
   const cursors: string[] = [];
   const flags = { terminated: false, terminatedAny: false };
   scanApiPayload(body, media, cursors, flags);
-  const next = cursors.length ? cursors[cursors.length - 1] : null;
-  // The non-advancing cursor, computed FIRST: the end protocol's echo
-  // pages are empty by shape, and they must teach nothing below.
-  const echoed = media.length === 0 && next !== null && next === cursor;
-  // Our own empty page carries the same soft-throttle signature the
-  // passive path reads in handleMediaPayload; on a client-cache revisit
-  // it can be the ONLY page, so it must teach softEmptyAt too. NOT on
-  // an echo: that is the end-of-feed shape, not the throttle's.
-  if (media.length === 0 && !echoed) {
-    const stated = profileMediaCounts.get(gridHandle);
-    if (stated !== undefined && stated > 0) {
-      softEmptyAt = Date.now();
-      softEmptyHandle = gridHandle;
-    }
-  }
-  // The pre-dedupe OWNED count: how much of this page provably belongs
-  // to the grid's profile. The prefill's template can be another
-  // profile's request (the resource-timing lookback), and a page that
-  // owns nothing must not steer this feed's cursor or its end.
-  const owned = media.filter((m) => ownedByGrid(m.href)).length;
-  if (flags.terminated && (owned > 0 || media.length === 0)) {
-    endFeed("X sent TimelineTerminateTimeline (replay)");
-  }
-  // The empty-timeline end, same signal as applyPayload's: a from-top
-  // replay answered empty AND terminated means the timeline has nothing.
-  // Same empty-grid gate too: a sparse cache-restored grid must not be
-  // ended by the photos op's verdict.
-  if (flags.terminatedAny && media.length === 0 && !cursor
-    && tiles.size === 0) {
-    endFeed("empty timeline: terminated at page 1 (replay)");
-  }
-  // A missing cursor is an immediate end; no shape of stall withholds the
-  // cursor entirely. The ECHO is no longer ruled on here: it is ambiguous
-  // (true end vs mid-feed stall, see noteCursorEcho) and the callers own
-  // the retry, so this only reports the shape. An empty page whose cursor
-  // ADVANCES is also left alone; that is the deleted-tweets shape, which
-  // X's own feed reads straight past.
-  if (media.length === 0 && !next) endFeed("terminal page: no cursor");
-  if (media.length > 0) noteCursorProgress();
+  // The shared page rules (see judgePage). No echo vote from here: the
+  // echo is ambiguous (true end vs mid-feed stall, see noteCursorEcho)
+  // and the callers own the retry, so judgePage only reports the
+  // shape. The terminate rule carries the owned-or-empty gate because
+  // the prefill's template can be another profile's request (the
+  // resource-timing lookback).
+  const page = judgePage(media, cursors, flags, cursor, {
+    handleOk: true,
+    terminateNeedsOwnedOrEmpty: true,
+    echoVoteSource: null,
+    reasonPrecedence: "terminate",
+    reasonSuffix: " (replay)",
+  });
+  // Our own empty page carries the same soft-throttle signature
+  // handleMediaPayload reads pre-parse; on a client-cache revisit it
+  // can be the ONLY page, so it must teach softEmptyAt too. NOT on an
+  // echo: that is the end-of-feed shape, not the throttle's.
+  if (media.length === 0 && !page.echoed) teachSoftEmpty(gridHandle);
+  // A missing cursor is an immediate end; no shape of stall withholds
+  // the cursor entirely. An empty page whose cursor ADVANCES is left
+  // alone; that is the deleted-tweets shape, which X's own feed reads
+  // straight past.
+  if (media.length === 0 && !page.next) endFeed("terminal page: no cursor");
   ownPhotos += media.length;
   const added = mintApiTiles(media);
   ownAdded += added;
-  return { added, found: media.length, owned, next, echoed };
+  return {
+    added, found: media.length, owned: page.owned,
+    next: page.next, echoed: page.echoed,
+  };
 }
 
 async function apiPrefill(): Promise<void> {
