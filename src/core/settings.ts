@@ -30,6 +30,12 @@ export function watchSetting(key: string): () => boolean {
 // stray stored value normalizes instead of leaking to callers.
 const choices = new Map<string, string>();
 const choiceReaders = new Map<string, (stored: Record<string, unknown>) => string>();
+// The last full snapshot, kept in step with onChanged. A choice must
+// re-read from the WHOLE snapshot (that is the predecessor-key
+// contract above; a synthetic one-key snapshot hides the legacy keys),
+// and it must do so SYNCHRONOUSLY: listeners registered after this
+// module (mosaic's own onChanged) read the cache in the same tick.
+const snapshot: Record<string, unknown> = {};
 
 export function watchChoice(
   key: string,
@@ -39,7 +45,8 @@ export function watchChoice(
     choiceReaders.set(key, read);
     choices.set(key, read({}));
     initialReads.push(chrome.storage.local.get(null).then((s) => {
-      choices.set(key, read(s));
+      Object.assign(snapshot, s);
+      choices.set(key, read(snapshot));
     }));
   }
   return () => choices.get(key) ?? read({});
@@ -49,9 +56,11 @@ chrome.storage.onChanged.addListener((changes) => {
   for (const key of watched) {
     if (changes[key]) values.set(key, changes[key].newValue !== false);
   }
-  for (const [key, read] of choiceReaders) {
-    if (changes[key]) choices.set(key, read({ [key]: changes[key].newValue }));
+  for (const key of Object.keys(changes)) {
+    if (changes[key].newValue === undefined) delete snapshot[key];
+    else snapshot[key] = changes[key].newValue;
   }
+  for (const [key, read] of choiceReaders) choices.set(key, read(snapshot));
 });
 
 // The Media-tab default. One value, three generations of keys: 2.1

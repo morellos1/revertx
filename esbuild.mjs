@@ -60,10 +60,21 @@ async function assembleFirefox() {
 
 await rm(outDir, { recursive: true, force: true });
 await mkdir(outDir, { recursive: true });
-await cp(path.join(root, "src", "styles", "popup.css"), path.join(outDir, "popup.css"));
-await cp(path.join(root, "src", "styles", "content.css"), path.join(outDir, "content.css"));
+const copyCss = async () => {
+  await cp(path.join(root, "src", "styles", "popup.css"), path.join(outDir, "popup.css"));
+  await cp(path.join(root, "src", "styles", "content.css"), path.join(outDir, "content.css"));
+};
+await copyCss();
 
 if (watchMode) {
+  // esbuild watches only the TS entry points; without this a CSS edit
+  // under watch serves the stale copy from watch start.
+  const { watch: fsWatch } = await import("node:fs");
+  for (const name of ["popup.css", "content.css"]) {
+    fsWatch(path.join(root, "src", "styles", name), () => {
+      copyCss().then(() => console.log(`copied ${name}`), console.error);
+    });
+  }
   await (await context(config)).watch();
   console.log("watching (Chrome package only)...");
 } else {

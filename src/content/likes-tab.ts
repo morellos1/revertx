@@ -7,7 +7,7 @@
 // cloned from X's selected tab when one is on screen and kept in
 // sessionStorage for a direct load of the likes route; with nothing cached,
 // inline styles approximate it. The click is handled in interceptor.ts.
-import { watchSetting } from "../core/settings";
+import { settingsReady, watchSetting } from "../core/settings";
 import { subscribeToMutations } from "./observer";
 
 const TAB_ATTR = "data-xtag-likes-tab";
@@ -59,10 +59,17 @@ function onLikesRoute(handle: string): boolean {
 
 // Remember what X's selected tab looks like whenever one is on screen.
 let remembered: string | null = null;
+// The node the template last came from. Serializing innerHTML is a
+// multi-KB string per call and this runs on every mutation batch of a
+// profile page; the selected tab's NODE only changes when X remounts
+// the strip (measured: it remounts per tab switch), so the element
+// identity is the cheap gate in front of the serialization.
+let rememberedFrom: Element | null = null;
 function rememberSelected(strip: HTMLElement): void {
   const selected = strip.querySelector<HTMLAnchorElement>(
     `a[role="tab"][aria-selected="true"]:not([${TAB_ATTR}])`);
-  if (!selected) return;
+  if (!selected || selected === rememberedFrom) return;
+  rememberedFrom = selected;
   const html = selected.innerHTML;
   if (html === remembered) return;
   remembered = html;
@@ -132,7 +139,7 @@ function evaluate(): void {
   const { strip, handle } = found;
   rememberSelected(strip);
   const selected = onLikesRoute(handle);
-  if (existing && existing.isConnected && strip.contains(existing)
+  if (existing && strip.contains(existing)
     && (existing.getAttribute("aria-selected") === "true") === selected) {
     return;
   }
@@ -159,5 +166,8 @@ export function initLikesTab(): void {
   });
   window.addEventListener("popstate", evaluate);
   subscribeToMutations(evaluate);
-  evaluate();
+  // Not before the storage read: enabled() answers its default (on)
+  // until then, and a boot-time evaluate could inject the tab for a
+  // reader who turned it off (settings.ts's own init-time rule).
+  void settingsReady().then(evaluate);
 }

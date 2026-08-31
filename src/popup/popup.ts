@@ -50,12 +50,23 @@ function showWarnings(report: NativeReport | null | undefined, on: Record<string
   showWarnings(report, on);
   chrome.storage.onChanged.addListener((changes) => {
     for (const key of KEYS) {
-      if (changes[key]) on[key] = changes[key].newValue === true;
+      // The same polarity as the boot read above: likestab and
+      // sharecopy default ON when unset, postgrid defaults OFF. A
+      // removed key must not read differently here than there.
+      if (changes[key]) {
+        const v = changes[key].newValue;
+        on[key] = key === "postgrid" ? v === true : v !== false;
+      }
     }
     // A dropdown pick on the page while the popup is open: follow it.
+    // From the whole snapshot, like the boot read: readMediaView's
+    // fallback chain covers the legacy keys, and a one-key snapshot
+    // hides them from it.
     if (changes["mediaview"]) {
-      view.value = readMediaView({ mediaview: changes["mediaview"].newValue });
-      syncMosaicNote();
+      void chrome.storage.local.get(null).then((s) => {
+        view.value = readMediaView(s);
+        syncMosaicNote();
+      });
     }
     if (changes[NATIVE_KEY]) report = changes[NATIVE_KEY].newValue as NativeReport | null;
     showWarnings(report, on);

@@ -348,7 +348,7 @@
   // only the wrapper body, which barely changes between builds). Bump
   // when the tap's behavior changes.
   try {
-    (window.fetch as typeof window.fetch & { __xtagV?: number }).__xtagV = 6;
+    (window.fetch as typeof window.fetch & { __xtagV?: number }).__xtagV = 7;
   } catch { /* marker only */ }
 
   // X's app is fetch-based; the XHR wrap is the belt.
@@ -372,18 +372,25 @@
     this.addEventListener("load", function (this: XMLHttpRequest & { __xtagUrl?: string }) {
       try {
         if (!this.__xtagUrl) return;
+        // The responseText GETTER throws for a non-text responseType
+        // ("json", "arraybuffer", "blob"); typeof does not guard the
+        // access, and the throw used to abort this whole handler, body
+        // and headers both. Gate on responseType instead, and mirror
+        // the fetch tap's statuses: body for any 2xx that is readable,
+        // headers alone for every other completed answer.
+        const textual = this.responseType === "" || this.responseType === "text";
+        const ok = this.status >= 200 && this.status < 300;
         if (MEDIA_RE.test(this.__xtagUrl)) {
           const remaining = this.getResponseHeader("x-rate-limit-remaining");
           const reset = this.getResponseHeader("x-rate-limit-reset");
           const limit = this.getResponseHeader("x-rate-limit-limit");
-          if (this.status === 200 && typeof this.responseText === "string") {
-            emit(this.__xtagUrl, this.responseText, 200, remaining, reset, limit);
-          } else if (this.status >= 400) {
+          if (ok && textual) {
+            emit(this.__xtagUrl, this.responseText, this.status, remaining, reset, limit);
+          } else if (this.status !== 0) {
             emit(this.__xtagUrl, "", this.status, remaining, reset, limit);
           }
-        } else if (PROFILE_RE.test(this.__xtagUrl)
-          && this.status === 200 && typeof this.responseText === "string") {
-          emit(this.__xtagUrl, this.responseText, 200, null, null, null, "profile");
+        } else if (PROFILE_RE.test(this.__xtagUrl) && ok && textual) {
+          emit(this.__xtagUrl, this.responseText, this.status, null, null, null, "profile");
         }
       } catch { /* never break the page's own XHR */ }
     });

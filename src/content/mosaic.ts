@@ -149,8 +149,10 @@ let override: "mosaic" | "feed" | null = null;
 // Whether the grid overlay is up RIGHT NOW. Any logic keyed on "the
 // reader scrolled down" must ask, because the driver walks the WINDOW
 // scroll behind the overlay. OUTSIDE this extension the contract is the
-// xtag-gridmode class on <html>, which activate/deactivate hold in exact
-// step with `active`; keep it that way, other extensions branch on it.
+// xtag-gridmode class on <html>: it arrives at the TAKEOVER (the first
+// placeOverlay that finds X's column and tablist, see `claimed`), beats
+// after `active` flips, and deactivate removes it; other extensions
+// branch on it, so keep that timing.
 let active = false;
 let exhausted = false;
 let stalls = 0;
@@ -212,13 +214,11 @@ function shouldGrid(): boolean {
 }
 
 function selectedMediaTab(): HTMLAnchorElement | null {
-  const tabs = document.querySelectorAll<HTMLAnchorElement>(
-    '[role="tablist"] a[role="tab"][aria-selected="true"]');
-  for (const tab of Array.from(tabs)) {
-    const path = (tab.getAttribute("href") ?? "").split("?")[0].replace(/\/$/, "");
-    if (MEDIA_PATH_RE.test(path)) return tab;
-  }
-  return null;
+  // One scan, one href-normalize rule: allMediaTabs owns the walk, so
+  // the rename half and the restore half can never disagree about
+  // which tabs are media tabs.
+  return allMediaTabs()
+    .find((tab) => tab.getAttribute("aria-selected") === "true") ?? null;
 }
 
 // --- the tab wears the grid's name -----------------------------------------
@@ -288,10 +288,19 @@ function assertTabLabel(): void {
     });
     return;
   }
+  let wearing = false;
   for (const tab of allMediaTabs()) {
-    setFirstTextNode(tab, (text) =>
-      text === GRID_TAB_LABEL && tabLabelWas ? tabLabelWas : null);
+    setFirstTextNode(tab, (text) => {
+      if (text !== GRID_TAB_LABEL) return null;
+      wearing = true;
+      return tabLabelWas;
+    });
   }
+  // Restore complete: no tab wears the grid's name any more, so the
+  // fast path above holds again. Without this the one label this
+  // module ever wrote kept the tablist walk running on every mutation
+  // batch across all of x.com for the rest of the page's life.
+  if (!active && !wearing) tabLabelWas = null;
 }
 
 // --- overlay ---------------------------------------------------------------
@@ -352,18 +361,40 @@ function unwatchColumn(): void {
 }
 
 // The profile's STICKY top bar (back arrow · name): the ancestor of
-// app-bar-back that computes sticky; bottom 53 measured at deep scroll.
-function stickyBarBottom(col: HTMLElement | null): number {
-  let top = 53;
-  const back = col?.querySelector<HTMLElement>('[data-testid="app-bar-back"]');
-  for (let node = back; node && node !== col; node = node.parentElement) {
-    const pos = getComputedStyle(node).position;
-    if (pos === "sticky" || pos === "fixed") {
-      top = node.getBoundingClientRect().bottom;
-      break;
+// app-bar-back that computes sticky (or fixed). ONE walk with ONE
+// position rule for both consumers; the dock math reads the node's
+// rect bottom, the spacer takes its parent as home, and the two used
+// to carry drifted copies of this walk. The back-anchor lookup is
+// cached per column node: placeOverlay rides every scroll frame, and
+// the full-column query was the walk's real cost. A found anchor is
+// cached only while connected; a missing one is re-queried every call
+// (a half-rendered header must not pin an empty answer).
+let stickyBackCache: { col: HTMLElement; back: HTMLElement } | null = null;
+let colBorderCache: { col: HTMLElement; left: number; right: number } | null = null;
+
+function stickyBarNode(col: HTMLElement): HTMLElement | null {
+  if (!stickyBackCache || stickyBackCache.col !== col
+    || !stickyBackCache.back.isConnected) {
+    const back = col.querySelector<HTMLElement>('[data-testid="app-bar-back"]');
+    if (!back) {
+      stickyBackCache = null;
+      return null;
     }
+    stickyBackCache = { col, back };
   }
-  return Math.max(top, 0);
+  for (let node: HTMLElement | null = stickyBackCache.back;
+    node && node !== col; node = node.parentElement) {
+    const pos = getComputedStyle(node).position;
+    if (pos === "sticky" || pos === "fixed") return node;
+  }
+  return null;
+}
+
+// Bottom 53 measured at deep scroll; the fallback when nothing computes
+// sticky yet.
+function stickyBarBottom(col: HTMLElement | null): number {
+  const bar = col ? stickyBarNode(col) : null;
+  return Math.max(bar ? bar.getBoundingClientRect().bottom : 53, 0);
 }
 
 // Two positioning modes, flipped at the exact scroll where they coincide,
@@ -442,12 +473,19 @@ function placeOverlay(): void {
   // borders (measured live) that run the full scroll length, and a
   // full-width overlay covers them. Inset by the real border widths and
   // X's own lines stay visible beside the grid, in whatever color the
-  // theme gives them.
-  const colStyle = getComputedStyle(col);
-  const borderL = parseFloat(colStyle.borderLeftWidth) || 0;
-  const borderR = parseFloat(colStyle.borderRightWidth) || 0;
-  overlay.style.left = `${Math.round(rect.left + borderL)}px`;
-  overlay.style.width = `${Math.round(rect.width - borderL - borderR)}px`;
+  // theme gives them. Cached per column node: this runs on every
+  // scroll frame, and the widths are constants of the column's own
+  // life (a remount swaps the node, which swaps the cache).
+  if (!colBorderCache || colBorderCache.col !== col) {
+    const colStyle = getComputedStyle(col);
+    colBorderCache = {
+      col,
+      left: parseFloat(colStyle.borderLeftWidth) || 0,
+      right: parseFloat(colStyle.borderRightWidth) || 0,
+    };
+  }
+  overlay.style.left = `${Math.round(rect.left + colBorderCache.left)}px`;
+  overlay.style.width = `${Math.round(rect.width - colBorderCache.left - colBorderCache.right)}px`;
   // The column's width is the layout's one input besides the ratios;
   // re-lay-out when it actually changed (resize, sidebar flex).
   if (gridEl && Math.abs(gridEl.clientWidth - lastLayoutWidth) > 1) scheduleLayout();
@@ -489,11 +527,8 @@ let sizeTimer = 0;
 function spacerHome(): HTMLElement | null {
   const col = primaryColumn();
   if (!col) return null;
-  const back = col.querySelector<HTMLElement>('[data-testid="app-bar-back"]');
-  for (let node = back; node && node !== col; node = node.parentElement) {
-    if (getComputedStyle(node).position !== "sticky") continue;
-    return node.parentElement ?? col;
-  }
+  const bar = stickyBarNode(col);
+  if (bar) return bar.parentElement ?? col;
   return col.querySelector('section[role="region"]')?.parentElement ?? col;
 }
 
@@ -686,12 +721,19 @@ function tileRatio(el: HTMLElement): number {
 const THUMB_SMALL_EDGE = 680;
 
 function assertThumbScale(el: HTMLElement, cssWidth: number): void {
+  // Decided once per tile: every layout pass calls this for every tile
+  // wide enough, and the URL parse below is per-call allocation for an
+  // answer that never changes after the first decision (the upgrade is
+  // upward-only, and a URL that is not X's thumb shape stays whatever
+  // it is).
+  if (el.dataset.xtagScaled !== undefined) return;
   const img = el.firstElementChild;
   if (!(img instanceof HTMLImageElement)) return;
   const raw = Number(el.dataset.xtagRatio);
   const ratio = Number.isFinite(raw) && raw > 0 ? raw : 1;
   const smallWidth = ratio > 1 ? THUMB_SMALL_EDGE / ratio : THUMB_SMALL_EDGE;
   if (cssWidth <= smallWidth) return;
+  el.dataset.xtagScaled = "";
   try {
     const url = new URL(img.src);
     if (url.searchParams.get("name") !== "small") return;
@@ -1147,6 +1189,15 @@ function punchHole(): void {
     setHole("");
     return;
   }
+  // The common batch has no menu and no hover card open: one presence
+  // query skips the overlay rect read (a forced layout, landing right
+  // after placeOverlay's style writes in the same handler) and both
+  // panel scans.
+  if (holePath === "" && !document.querySelector(HOLE_HOSTS)) {
+    holeIdle++;
+    holeOpEl = null;
+    return;
+  }
   const o = overlay.getBoundingClientRect();
   const panel = holePanel(o);
   if (!panel) {
@@ -1553,10 +1604,10 @@ function harvest(): number {
       if (!href) return;
       // Only the profile owner's own media: at an SPA transition the LEAVING
       // view's cells can still be mounted for a beat, and a retweet's photo
-      // anchor names the ORIGINAL poster; the handle prefix keeps both out.
+      // anchor names the ORIGINAL poster; ownedByGrid keeps both out.
       // (The owner's own stale post-photos pass, and that is fine: the media
       // feed re-serves the same hrefs and the tile map dedupes them.)
-      if (!href.toLowerCase().startsWith(`/${gridHandle}/status/`)) return;
+      if (!ownedByGrid(href)) return;
       run.push({
         href,
         src: a.querySelector("img")?.getAttribute("src") ?? null,
@@ -1597,7 +1648,12 @@ const graphqlSeen: SeenRequest[] = [];
 
 function watchGraphql(): void {
   try {
-    performance.setResourceTimingBufferSize(32768);
+    // Big enough for every request between page start and this
+    // registration (the buffered replay below is all the buffer
+    // serves; after it, the 64-entry ring is the memory). 32768 here
+    // once retained tens of thousands of entry objects for the tab's
+    // whole life; the boot window needs a few hundred.
+    performance.setResourceTimingBufferSize(4096);
     new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
         if (!entry.name.includes("/graphql/")) continue;
@@ -1957,7 +2013,15 @@ let last429At = 0;
 // 429, healthy budget headers, and still nothing served (measured
 // live; X's client then backs off entirely). The native view shows a
 // bare "no photos" then, which reads as an empty profile.
+//
+// KEYED BY HANDLE: the end protocol re-fetches the LAST cursor of every
+// completed feed up to 3 times, and each of those answers is an empty
+// page for a counted profile; unkeyed, every finished read armed a
+// 5-minute window in which OTHER profiles' empty moments read as
+// soft-throttled (an early false settle on a slow grid, a false native
+// notice on a photo-less profile).
 let softEmptyAt = 0;
+let softEmptyHandle = "";
 const SOFT_EMPTY_FRESH_MS = 5 * 60_000;
 
 // --- the quota pill --------------------------------------------------------
@@ -2031,6 +2095,7 @@ function assertRateNotice(): void {
   // put a warning under a grid full of photos.
   const softEmpty = !limited && !active && onPhotosFeed()
     && now - softEmptyAt < SOFT_EMPTY_FRESH_MS
+    && softEmptyHandle === (location.pathname.split("/")[1] ?? "").toLowerCase()
     && !document.querySelector('[data-testid="primaryColumn"] a[href*="/photo/"]');
   const wanted = !active && onPhotosFeed() && (limited || softEmpty);
   if (!wanted) {
@@ -2100,8 +2165,7 @@ function applyPayload(url: string, body: string, srcHandle: string): void {
       // needs to ask the combined media timeline instead.
       fallbackSourceUrl = url;
     }
-    const owned = media.filter(
-      (m) => m.href.toLowerCase().startsWith(`/${gridHandle}/status/`)).length;
+    const owned = media.filter((m) => ownedByGrid(m.href)).length;
     // The non-advancing cursor (measured live): X can end a timeline
     // with NO terminate instruction at all; the terminal page is
     // cursor-only entries whose Bottom cursor EQUALS the cursor that
@@ -2166,8 +2230,11 @@ function applyPayload(url: string, body: string, srcHandle: string): void {
     // that does the work; but a payload that DOES say terminate is still
     // saying the timeline is over. A page's SIZE says nothing: a sparse
     // page mid-feed is the normal shape of a photos timeline filtered
-    // server-side.
-    if (flags.terminated) endFeed("X sent TimelineTerminateTimeline");
+    // server-side. Handle-gated like every other end signal here: a
+    // stale buffered page from another profile must not end this feed.
+    if (flags.terminated && srcHandle === gridHandle) {
+      endFeed("X sent TimelineTerminateTimeline");
+    }
   } catch (error) {
     console.warn("[xtag] media payload parse failed:", error);
   }
@@ -2184,7 +2251,10 @@ function handleMediaPayload(url: string, body: string): void {
   // a profile X itself counts media on. A string scan, not a parse.
   if (!body.includes('"media_url_https"')) {
     const stated = profileMediaCounts.get(srcHandle);
-    if (stated !== undefined && stated > 0) softEmptyAt = Date.now();
+    if (stated !== undefined && stated > 0) {
+      softEmptyAt = Date.now();
+      softEmptyHandle = srcHandle;
+    }
   }
   if (active) {
     applyPayload(url, body, srcHandle);
@@ -2342,15 +2412,22 @@ function isMediaHost(src: string): boolean {
   }
 }
 
+// The ONE owner rule every tile source applies (harvest, payloads,
+// replays): this profile's own /status/ hrefs only. It keeps a
+// retweet's foreign photos, a stale buffered payload's media, and a
+// foreign template's pages out; three call sites, one predicate, so a
+// change to the href shape cannot land in one and miss the others.
+function ownedByGrid(href: string): boolean {
+  return href.toLowerCase().startsWith(`/${gridHandle}/status/`);
+}
+
 // scanApiPayload walks the response in document order, so `found` is already
 // in feed order; one run, merged as it stands.
 function mintApiTiles(found: ApiMedia[]): number {
   return mergeRun(found
-    // The same owner filter the harvest applies; it also quietly discards
-    // a stale template's media if the resource entry belonged to a
-    // previously-viewed profile.
-    .filter((m) => m.href.toLowerCase().startsWith(`/${gridHandle}/status/`)
-      && isMediaHost(m.src))
+    // The owner filter also quietly discards a stale template's media
+    // if the resource entry belonged to a previously-viewed profile.
+    .filter((m) => ownedByGrid(m.href) && isMediaHost(m.src))
     .map((m) => ({ href: m.href, src: m.src, video: m.video, ratio: m.ratio })));
 }
 
@@ -2382,7 +2459,8 @@ function assertOwnApi(template: string): URL {
 
 async function fetchMediaPage(
   template: string, cursor: string | null,
-): Promise<{ added: number; found: number; next: string | null; echoed: boolean }> {
+): Promise<{ added: number; found: number; owned: number;
+  next: string | null; echoed: boolean }> {
   const url = assertOwnApi(template);
   const rawVars = url.searchParams.get("variables");
   if (!rawVars) throw new Error("template has no variables param");
@@ -2417,14 +2495,28 @@ async function fetchMediaPage(
   const flags = { terminated: false, terminatedAny: false };
   scanApiPayload(body, media, cursors, flags);
   const next = cursors.length ? cursors[cursors.length - 1] : null;
+  // The non-advancing cursor, computed FIRST: the end protocol's echo
+  // pages are empty by shape, and they must teach nothing below.
+  const echoed = media.length === 0 && next !== null && next === cursor;
   // Our own empty page carries the same soft-throttle signature the
   // passive path reads in handleMediaPayload; on a client-cache revisit
-  // it can be the ONLY page, so it must teach softEmptyAt too.
-  if (media.length === 0) {
+  // it can be the ONLY page, so it must teach softEmptyAt too. NOT on
+  // an echo: that is the end-of-feed shape, not the throttle's.
+  if (media.length === 0 && !echoed) {
     const stated = profileMediaCounts.get(gridHandle);
-    if (stated !== undefined && stated > 0) softEmptyAt = Date.now();
+    if (stated !== undefined && stated > 0) {
+      softEmptyAt = Date.now();
+      softEmptyHandle = gridHandle;
+    }
   }
-  if (flags.terminated) endFeed("X sent TimelineTerminateTimeline (replay)");
+  // The pre-dedupe OWNED count: how much of this page provably belongs
+  // to the grid's profile. The prefill's template can be another
+  // profile's request (the resource-timing lookback), and a page that
+  // owns nothing must not steer this feed's cursor or its end.
+  const owned = media.filter((m) => ownedByGrid(m.href)).length;
+  if (flags.terminated && (owned > 0 || media.length === 0)) {
+    endFeed("X sent TimelineTerminateTimeline (replay)");
+  }
   // The empty-timeline end, same signal as applyPayload's: a from-top
   // replay answered empty AND terminated means the timeline has nothing.
   // Same empty-grid gate too: a sparse cache-restored grid must not be
@@ -2439,13 +2531,12 @@ async function fetchMediaPage(
   // the retry, so this only reports the shape. An empty page whose cursor
   // ADVANCES is also left alone; that is the deleted-tweets shape, which
   // X's own feed reads straight past.
-  const echoed = media.length === 0 && next !== null && next === cursor;
   if (media.length === 0 && !next) endFeed("terminal page: no cursor");
   if (media.length > 0) noteCursorProgress();
   ownPhotos += media.length;
   const added = mintApiTiles(media);
   ownAdded += added;
-  return { added, found: media.length, next, echoed };
+  return { added, found: media.length, owned, next, echoed };
 }
 
 async function apiPrefill(): Promise<void> {
@@ -2508,8 +2599,12 @@ async function apiPrefill(): Promise<void> {
     if (!active || gridHandle !== startedFor) return;
     // The page's own Bottom cursor is the frontier now. Dropped, the
     // next asker (the extension, or a drive making X re-fetch from the
-    // top) buys this same page a second time.
-    if (!page.echoed && page.next) {
+    // top) buys this same page a second time. ONLY a page that minted
+    // owned media may steer: the lookback template can belong to the
+    // LAST profile (a fast hop lands inside the 5s window), and adopting
+    // a foreign page's cursor with cursorOurs set locks this profile's
+    // own cursors out at the adoption gate for the whole visit.
+    if (!page.echoed && page.next && page.owned > 0) {
       payloadCursor = page.next;
       cursorOurs = true;
     }
@@ -2737,6 +2832,19 @@ async function driveLoop(): Promise<void> {
         endFeed(`media_count ceiling (${tiles.size} tiles >= ${stated} stated)`);
       }
     }
+    // The one stall-settle rule, shared by the at-bottom wait and the
+    // degraded drive below: both are "no progress on a settled grid",
+    // counted on the same counter and ended the same way (the settle
+    // wording and the feedEnded interplay changed several times; two
+    // copies of this block drifted once already). True means the
+    // caller settles this beat.
+    const stallSettles = (): boolean => {
+      stalls++;
+      if (stalls < STALLS_FOR_END) return false;
+      exhausted = true;
+      setStatus(settleStatus());
+      return true;
+    };
     // The soft-withheld EMPTY grid: X answers media pages with no media
     // at all for a profile it counts media on (soft throttle, or
     // server-side filtering; /colordifference served empty photo AND
@@ -2748,6 +2856,7 @@ async function driveLoop(): Promise<void> {
     // soft end is never cached, and any later tile clears it as always.
     if (!exhausted && tiles.size === 0
       && Date.now() - softEmptyAt < SOFT_EMPTY_FRESH_MS
+      && softEmptyHandle === gridHandle
       && Date.now() - activatedAt > 8000) {
       exhausted = true;
       setStatus(settleStatus());
@@ -2857,14 +2966,7 @@ async function driveLoop(): Promise<void> {
     // nothing new"; which would call a loading account photo-less.
     const settled = tiles.size > 0 || Date.now() - activatedAt > 8000;
     if (atBottom && !progressed) {
-      if (settled) {
-        stalls++;
-        if (stalls >= STALLS_FOR_END) {
-          exhausted = true;
-          setStatus(settleStatus());
-          continue;
-        }
-      }
+      if (settled && stallSettles()) continue;
       // At the bottom with nothing new: wait out another patience window
       // rather than scrolling into nowhere.
       lastStepAt = Date.now();
@@ -2944,14 +3046,7 @@ async function driveLoop(): Promise<void> {
     // un-capped drive borrow-jumped the window every step forever: the
     // reader saw flicker and skeletons that never settled. Any later
     // tile clears the soft end as always.
-    if (!progressed && settled) {
-      stalls++;
-      if (stalls >= STALLS_FOR_END) {
-        exhausted = true;
-        setStatus(settleStatus());
-        continue;
-      }
-    }
+    if (!progressed && settled && stallSettles()) continue;
     borrowWindow();
     try {
       const realDoc = document.documentElement.scrollHeight;
@@ -3014,6 +3109,11 @@ function activate(): void {
   gridHandle = location.pathname.split("/")[1].toLowerCase();
   tiles.clear();
   claimed = false;
+  // Stale from the LAST session otherwise: placeOverlay writes docked
+  // only after both the column and the tablist measure, and a re-entry
+  // during X's strip remount would read the old true at scrollY 0 and
+  // let the driver borrow-jump the reader's live window.
+  docked = false;
   try {
     // The gridmode clip and the scroll reset are applied by the first
     // successful placeOverlay (see `claimed`).
@@ -3045,7 +3145,7 @@ function activate(): void {
   void driveLoop();
 }
 
-function deactivate(restoreScroll = true): void {
+function deactivate(): void {
   if (!active) return;
   logSpend();
   stashGrid();
@@ -3061,9 +3161,13 @@ function deactivate(restoreScroll = true): void {
   // clamp against, is what X's own tab switch does anyway.
   // A grid that never claimed the page never moved it either; the
   // reader's scroll on X's own view is not ours to reset.
-  if (restoreScroll && claimed) window.scrollTo(0, 0);
+  if (claimed) window.scrollTo(0, 0);
   claimed = false;
   unwatchColumn();
+  // The per-column caches hold DOM nodes; a kept reference would
+  // retain the torn-down header subtree for the whole next visit.
+  stickyBackCache = null;
+  colBorderCache = null;
   spacer?.remove();
   spacer = null;
   spacerHeight = 0;
@@ -3094,6 +3198,14 @@ function evaluate(): void {
     return;
   }
   if (shouldGrid()) {
+    // A photos-feed-to-photos-feed jump between two PROFILES: history
+    // can land directly on another handle's media page (back/forward
+    // across profiles, or two SPA hops inside one mutation batch), and
+    // with `active` still true activate() would early-return, leaving
+    // the old profile's grid (handle, tiles, cursors) under the new
+    // header while the owner filters reject everything new. Re-key it.
+    const handle = (location.pathname.split("/")[1] ?? "").toLowerCase();
+    if (active && gridHandle && handle !== gridHandle) deactivate();
     activate();
     if (overlay?.classList.contains("xtag-grid-viewing")) {
       overlay.classList.remove("xtag-grid-viewing");
@@ -3104,7 +3216,7 @@ function evaluate(): void {
       lastMaxInner = -1;
     }
   } else {
-    deactivate(active);
+    deactivate();
     // The override is per-visit: anywhere that is neither the media view
     // nor the photo viewer over it forgets it, so the next Media-tab
     // arrival starts from the stored default again.
@@ -3138,15 +3250,11 @@ function isMediaMenu(menu: HTMLElement): boolean {
 // Write-on-change: this is re-asserted per mutation batch now (see
 // assertMenuChecks), and an unguarded write would feed the observer a
 // characterData record every batch the menu stays open.
+// One text-node walk for the whole module: the tab label and the menu
+// item label must agree on which node carries the visible word, so this
+// is setFirstTextNode with a constant want (write-on-change included).
 function setItemText(item: HTMLElement, text: string): void {
-  const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
-  let node: Node | null;
-  while ((node = walker.nextNode())) {
-    const current = (node.textContent ?? "").trim();
-    if (!current) continue;
-    if (current !== text) node.textContent = text;
-    return;
-  }
+  setFirstTextNode(item, (current) => (current === text ? null : text));
 }
 
 // No rate note on the injected item: a second line makes the row
@@ -3399,6 +3507,11 @@ export function initMosaic(): void {
   // deactivates before X's bubble handler.)
   document.addEventListener("click", (event) => {
     if (!active || !docked || navigating) return;
+    // The same guard the tile click carries: a modified click opens a
+    // NEW tab and navigates nothing here, so snapping this window back
+    // to the dock point would throw away the reader's grid position
+    // for no route change.
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
     const target = event.target;
     if (!(target instanceof Element)) return;
     if (overlay && overlay.contains(target)) return;
@@ -3441,14 +3554,22 @@ export function initMosaic(): void {
       lastHref = location.href;
       evaluate();
     }
-    for (const mutation of mutations) {
-      if (mutation.type !== "childList") continue;
-      mutation.addedNodes.forEach((node) => {
-        if (!(node instanceof HTMLElement)) return;
-        const menu = node.closest<HTMLElement>('[role="menu"]') ?? null;
-        if (menu) injectGridItem(menu);
-        node.querySelectorAll<HTMLElement>('[role="menu"]').forEach(injectGridItem);
-      });
+    // Only a media page with a menu actually open earns the
+    // per-added-node scans: a scrolling timeline adds hundreds of nodes
+    // per batch, and the injection targets a dropdown that exists a
+    // fraction of a percent of the time. The observer runs after the
+    // change, so no menu in the document means no added node holds one.
+    if (MEDIA_PATH_RE.test(location.pathname)
+      && document.querySelector('[role="menu"]')) {
+      for (const mutation of mutations) {
+        if (mutation.type !== "childList") continue;
+        mutation.addedNodes.forEach((node) => {
+          if (!(node instanceof HTMLElement)) return;
+          const menu = node.closest<HTMLElement>('[role="menu"]') ?? null;
+          if (menu) injectGridItem(menu);
+          node.querySelectorAll<HTMLElement>('[role="menu"]').forEach(injectGridItem);
+        });
+      }
     }
     // Placement rides every batch too, not just the driver's beat: a
     // React commit that moves the tab bar lands here BEFORE the frame

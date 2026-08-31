@@ -51,6 +51,12 @@ export function initShareMenu(): void {
   const enabled = watchSetting("sharecopy");
   subscribeToMutations((mutations) => {
     if (!enabled()) return;
+    // No menu in the document means no added node can hold one (the
+    // observer runs after the change), and a menu is open a fraction
+    // of a percent of the time: one presence query gates the
+    // per-added-node closest/querySelectorAll scans off the common
+    // batch.
+    if (!document.querySelector(MENU_SELECTOR)) return;
     const menus = new Set<HTMLElement>();
     for (const mutation of mutations) {
       mutation.addedNodes.forEach((node) => {
