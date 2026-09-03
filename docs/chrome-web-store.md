@@ -32,6 +32,8 @@ worth a next version, not a rescue.
 | 2.2.0 | Quota fixes (no page is ever bought twice), the "image quota" pill loses its misread count, and GIF-only profiles get a grid via the `UserMedia` fallback described below. |
 | 2.2.1 | The hairline over the media dropdown (the overlay's composited layer leaked one pixel row at a fractional offset; it sits on whole pixels now), and the end of a profile settles at once instead of after the retry protocol. |
 | 2.2.2 | The profile hover card shows over the Mosaic. It mounts in X's `#layers`, which can never paint above the overlay, so the overlay clips the same hole for it that dropdowns get. The hole also leaves the way X leaves: it snaps shut the frame its host starts to fade or unmounts; the old animated collapse read as a box shrinking after the menu was gone. |
+| 2.2.3 | Internal only: one set of rules judges a timeline page whether x.com's own client fetched it or the view did, and every piece of per-visit loader state lives on one object. No change in behaviour. |
+| 2.2.4 | A review release. The end-of-profile count compares posts, which is what X's `media_count` counts (a profile of multi-photo posts used to end early and cache that end). A page answered after a hop to another profile can no longer steer the new profile's grid, and the loader's frontier only moves forward (a revisit no longer re-buys pages it already holds). The Mosaic row's check survives the dropdown's re-render, Escape with a dropdown open closes the dropdown only, and one transient replay failure no longer sends the visit to the window-borrowing drive. Replays are refused unless they target the page's own origin. |
 
 ## Listing
 
@@ -141,9 +143,9 @@ own grid. When it does ask, it reads the rate headers on every
 response, slows its own pages down once the budget runs low, and stops
 requesting while 12 remain, telling the user when loading resumes, so
 the site's own feeds keep the rest. If x.com answers 429 anyway, it
-stops requesting until the window resets and holds off replaying for
-10 minutes beyond that. Closing the view logs a receipt to the
-console: requests spent, budget left, and why loading stopped.
+stops requesting until the window resets, and the one first-page replay
+stays off for 10 minutes after any 429. Closing the view logs a receipt
+to the console: requests spent, budget left, and why loading stopped.
 
 Once the budget runs low, an "image quota" pill (a small fill bar and
 the reset time; no count, which read as an image count) sits at the

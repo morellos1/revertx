@@ -25,6 +25,9 @@ import { subscribeToMutations } from "./observer";
 
 const OVERLAY_ID = "xtag-grid";
 const GRID_ITEM_ATTR = "data-xtag-grid-item";
+// On the injected item while the grid is the view on screen; content.css
+// shows X's cloned check for it (see assertMenuChecks).
+const GRID_ITEM_CHECKED = "xtag-item-checked";
 // A profile's media-tab path.
 const MEDIA_PATH_RE = /^\/[A-Za-z0-9_]{1,15}\/media\/?$/;
 // The photo viewer's route: while the grid is active this KEEPS the grid
@@ -69,6 +72,9 @@ const API_COOLDOWN_MS = 10 * 60_000;
 // ask, and both big runs ended 100 photos early on a 3x cursor echo
 // while count=20 sailed past. Do not rebuild a page-size ladder.
 const PAGE_COUNT = 20;
+// A replay that never answers must not hold the one-buyer gate for the
+// rest of the page's life.
+const REPLAY_TIMEOUT_MS = 20_000;
 // A SHORT PAGE IS NOT THE END; do not add a minimum-page-size rule. X
 // applies the photo filter server-side: `count: 20` buys 20 items of the
 // underlying media timeline and returns only the photos among them, so
@@ -201,6 +207,11 @@ interface Visit {
   // sort meaningless and scrambled the grid. The order lives in exactly
   // one place: the grid's DOM.
   tiles: Map<string, Tile>;
+  // The posts those tiles come from (the href up to /photo/, lowercased).
+  // X's media_count counts POSTS, not photos (measured: a profile of 13
+  // media posts, one of them a 2-photo post, states 13 against 14 tiles),
+  // so the ceiling end compares against this, never against tiles.size.
+  posts: Set<string>;
   // The settled state: the skeleton tail is off and the status says why.
   // A stall guess unless feedEnded backs it; any later tile clears it.
   exhausted: boolean;
@@ -252,6 +263,11 @@ interface Visit {
   // the hazard (a few active pages at once can empty it and 429 X's own
   // feeds), so this stays behind the rate floor and the drive's pacing.
   extendBroken: boolean;
+  // Consecutive failed extensions. One blip (a 5xx, a dropped or timed-out
+  // connection, an unparsable body) is not a stale template, so the path
+  // breaks on the second in a row; a refusal (any other 4xx) breaks it at
+  // once. Reset by every page that answers.
+  extendFailures: number;
   // The API said the timeline is over: a TimelineTerminateTimeline(Bottom)
   // instruction in a payload, or a cursor that echoes past every retry.
   // This is what lets the skeleton tail settle in one beat instead of
@@ -285,7 +301,6 @@ interface Visit {
   passivePages: number;
   // The visit's low-water mark of x-rate-limit-remaining, for the receipt.
   rateLow: number | null;
-  spendStartedAt: number;
 }
 
 function newVisit(): Visit {
@@ -293,6 +308,7 @@ function newVisit(): Visit {
     gridHandle: location.pathname.split("/")[1].toLowerCase(),
     activatedAt: Date.now(),
     tiles: new Map(),
+    posts: new Set(),
     exhausted: false,
     stalls: 0,
     payloadSeen: false,
@@ -301,6 +317,7 @@ function newVisit(): Visit {
     cursorOurs: false,
     lastPassiveProgressAt: 0,
     extendBroken: false,
+    extendFailures: 0,
     feedEnded: false,
     feedEndReason: "",
     emptyPages: 0,
@@ -313,7 +330,6 @@ function newVisit(): Visit {
     ownAdded: 0,
     passivePages: 0,
     rateLow: null,
-    spendStartedAt: Date.now(),
   };
 }
 
@@ -365,6 +381,13 @@ function tabTextOf(tab: HTMLElement): string {
 function tabOriginalLabel(tab: HTMLElement): string {
   const text = tabTextOf(tab);
   return text === GRID_TAB_LABEL && tabLabelWas ? tabLabelWas : text;
+}
+
+// The selected media tab's label as X wrote it; "" with no such tab on
+// screen. The menu logic compares item text against this word.
+function currentTabLabel(): string {
+  const tab = selectedMediaTab();
+  return tab ? tabOriginalLabel(tab) : "";
 }
 
 // Every media-path tab in the tablist, selected or not: the RESTORE half
@@ -538,6 +561,11 @@ function stickyBarBottom(col: HTMLElement | null): number {
 // carries its own Videos/Photos/Grid strip for switching once docked.
 function placeOverlay(): void {
   if (!overlay) return;
+  // Not while the window is borrowed (a tile ride, a degraded drive step):
+  // the scroll is not the reader's then, and a dock computed from it flips
+  // the overlay to fixed mid-ride. The geometry holds until the return,
+  // the same freeze syncScroll and sizeSpacer take.
+  if (borrowed) return;
   const col = primaryColumn();
   const tablist = col?.querySelector<HTMLElement>('[role="tablist"]');
   // A fresh load has neither the column nor the tab bar yet, and the
@@ -619,12 +647,16 @@ function placeOverlay(): void {
 }
 
 // The window scroll at which the tab bar docks; where the two modes meet.
-function dockScrollY(): number {
+// Null while the column or the tab bar is unmounted (X remounts the strip
+// on every tab switch and rebuilds the column after the viewer): a 0 read
+// then cut the spacer by the whole header height for one tick, and the
+// window clamped into the gap.
+function dockScrollY(): number | null {
   const col = primaryColumn();
-  const bar = stickyBarBottom(col);
   const tablist = col?.querySelector<HTMLElement>('[role="tablist"]');
-  if (!tablist) return 0;
-  return Math.max(window.scrollY + tablist.getBoundingClientRect().bottom - bar, 0);
+  if (!col || !tablist) return null;
+  return Math.max(
+    window.scrollY + tablist.getBoundingClientRect().bottom - stickyBarBottom(col), 0);
 }
 
 // --- the page is the scrollbar ---------------------------------------------
@@ -703,10 +735,13 @@ function sizeSpacer(force: boolean): void {
   const now = Date.now();
   if (!force && now - lastSizedAt < SIZE_INTERVAL_MS) return;
   lastSizedAt = now;
+  // 4. Not while the dock point cannot be measured (see dockScrollY).
+  const dock = dockScrollY();
+  if (dock === null) return;
   const maxInner = Math.max(overlay.scrollHeight - overlay.clientHeight, 0);
   if (!force && maxInner === lastMaxInner) return;
   lastMaxInner = maxInner;
-  const wanted = dockScrollY() + maxInner + window.innerHeight;
+  const wanted = dock + maxInner + window.innerHeight;
   const delta = wanted - document.documentElement.scrollHeight;
   if (Math.abs(delta) <= 2) return;
   spacerHeight = Math.max(spacerHeight + delta, 0);
@@ -738,7 +773,9 @@ function syncScroll(): void {
   // grid, and copying it in would scroll the hidden grid to wherever the
   // viewer's short document clamps. Same freeze the sizing takes.
   if (navigating || onPhotoRoute()) return;
-  const target = docked ? Math.max(window.scrollY - dockScrollY(), 0) : 0;
+  const dock = docked ? dockScrollY() : 0;
+  if (dock === null) return;
+  const target = docked ? Math.max(window.scrollY - dock, 0) : 0;
   if (Math.abs(overlay.scrollTop - target) > 1) overlay.scrollTop = target;
 }
 
@@ -752,14 +789,21 @@ function syncScroll(): void {
 // document that is mid-flight.
 let borrowed = 0;
 let borrowReturnY = 0;
+// Bumped by deactivate, which also zeroes the counter: a borrow taken by a
+// visit that is over must not be returned into the next one, where it
+// would release that visit's own borrow early and move its window.
+let borrowEpoch = 0;
 
-function borrowWindow(): void {
-  if (borrowed++) return;
-  borrowReturnY = window.scrollY;
-  document.documentElement.classList.add("xtag-grid-borrowing");
+function borrowWindow(): number {
+  if (!borrowed++) {
+    borrowReturnY = window.scrollY;
+    document.documentElement.classList.add("xtag-grid-borrowing");
+  }
+  return borrowEpoch;
 }
 
-function returnWindow(): void {
+function returnWindow(epoch: number): void {
+  if (epoch !== borrowEpoch) return;
   if (!borrowed || --borrowed) return;
   document.documentElement.classList.remove("xtag-grid-borrowing");
   window.scrollTo(0, borrowReturnY);
@@ -1442,6 +1486,10 @@ const RIDE_MS = 400;
 async function openTile(tile: Tile): Promise<void> {
   if (navigating) return;
   navigating = true;
+  // The ride belongs to this visit: a re-activation inside its patience
+  // window must not have it click an anchor, or push a photo route, on
+  // the next profile's view.
+  const forVisit = visit;
   // The clicked tile dims while the ride runs; without it a click that
   // waits on a remount looks ignored.
   tile.el?.classList.add("xtag-tile-opening");
@@ -1472,7 +1520,7 @@ async function openTile(tile: Tile): Promise<void> {
     // cells when it does, which would leave the anchor detached and the click
     // doing nothing at all.
     if (tile.cellY !== undefined) {
-      borrowWindow();
+      const epoch = borrowWindow();
       try {
         window.scrollTo(0, Math.max(tile.cellY - window.innerHeight / 3, 0));
         const anchor = await pollFor(find, RIDE_MS);
@@ -1480,15 +1528,15 @@ async function openTile(tile: Tile): Promise<void> {
         // switch): the feed is VISIBLE now and the ride was yanking its
         // scroll around; abort rather than click an anchor on a view the
         // reader already left.
-        if (!active) return;
+        if (!active || visit !== forVisit) return;
         if (anchor) {
           anchor.click();
           return;
         }
       } finally {
-        returnWindow();
+        returnWindow(epoch);
       }
-      if (!active) return;
+      if (!active || visit !== forVisit) return;
     }
     // Step 3. No anchor to ride: deep-link, but the grid STAYS UP (hidden by
     // the path watcher, exactly as on the anchor path) so the close lands the
@@ -1691,6 +1739,7 @@ function mergeRun(run: Draft[]): number {
     };
     tile.el = makeTileEl(tile);
     visit.tiles.set(id, tile);
+    visit.posts.add(id.replace(/\/photo\/\d+$/, ""));
     pending.push(tile);
     added++;
   }
@@ -1831,7 +1880,16 @@ const PASSIVE_QUIET_MS = 4000;
 // extension are independent async paths that ask with the SAME cursor,
 // so overlapping them buys one page twice; each holds this flag across
 // its fetch (retries included) and stands down while the other has it.
-let replayInFlight = false;
+let replayInFlight: Visit | null = null;
+// Thrown by fetchMediaPage when the visit that asked is over by the time
+// the answer lands (a profile hop re-keyed the grid, or Escape and a fresh
+// pick): the page belongs to nobody now, and every caller stands down
+// without touching the visit that replaced it.
+class StaleVisit extends Error {
+  constructor() {
+    super("the visit that asked is over");
+  }
+}
 function endFeed(reason: string): void {
   if (!visit.feedEndReason) visit.feedEndReason = reason;
   visit.feedEnded = true;
@@ -1877,9 +1935,10 @@ const payloadBuffer: { url: string; body: string; at: number; handle: string }[]
 // interceptor forwards (legacy.media_count; exact, locale-free; the top
 // bar's "N photos & videos" TEXT was rejected: it carries no testid and
 // localized abbreviations like "12 हज़ार" or "12万" parse as small
-// integers, which would false-end big profiles). It is a CEILING: the
-// count includes videos, so tiles can reach it only when the photos
-// feed is complete. This is the end signal that needs NO timeline
+// integers, which would false-end big profiles). It counts media POSTS,
+// videos included (measured, see Visit.posts), so it is a CEILING on the
+// posts the photos feed can span: the tiles' posts reach it only when
+// the feed is complete. This is the end signal that needs NO timeline
 // payload and NO dock; without it a 1-photo profile shimmers forever,
 // because the stall settle is dock-only by design, and a feed X serves
 // from its client cache fetches nothing to read an end from. Keyed map,
@@ -2001,7 +2060,7 @@ function ratePauseUntil(): number {
 // normal read of a profile before theorizing about the bucket.
 function logSpend(): void {
   if (visit.ownPages === 0 && visit.passivePages === 0) return;
-  const secs = Math.max(1, Math.round((Date.now() - visit.spendStartedAt) / 1000));
+  const secs = Math.max(1, Math.round((Date.now() - visit.activatedAt) / 1000));
   const budget = rateLimit === null
     ? "budget unknown (no x-rate-limit-limit seen)"
     : `${rateRemaining ?? "?"}/${rateLimit} left`
@@ -2048,7 +2107,7 @@ function settleStatus(): string {
   // video-only profiles land here when the fallback comes up dry.
   if (visit.feedEndReason.includes("empty timeline")) {
     return stated !== undefined && stated > 0
-      ? `X serves none of this profile's ${stated} media as photos`
+      ? `X serves none of this profile's ${stated} media posts as photos`
       : "X sent an empty photo feed for this profile";
   }
   return stated !== undefined && stated > 0
@@ -2375,15 +2434,20 @@ function applyPayload(url: string, body: string, srcHandle: string): void {
     // not arm the replay/cursor machinery with a foreign template.
     if (page.owned > 0) {
       visit.payloadTemplate = url;
-      // A cursor of ours outranks the passive page-1 one; see cursorOurs.
-      // EXCEPT the page that answers our exact next ask: a passive page
-      // requested WITH our own frontier cursor is the page the extension
-      // would buy next, so its Bottom cursor advances the frontier for
-      // free. Without this, X's co-crawl passing our replay leaves the
-      // frontier frozen behind it, and the extension re-buys pages the
-      // co-crawl already delivered (measured live on /NASA: passive
-      // pages ran past the prefill's page within one visit).
-      if (page.next !== null && (!visit.cursorOurs
+      // The frontier moves FORWARD only, along the chain: the visit's
+      // first cursor, or the page that answers our exact next ask (a
+      // passive page requested WITH our frontier cursor is the page the
+      // extension would buy next, so its Bottom cursor advances the
+      // frontier for free; X's own crawl chains its cursors this way, so
+      // every page it fetches past ours extends the chain, which is what
+      // keeps the extension from re-buying pages the co-crawl already
+      // delivered; measured live on /NASA). Any other page is a rewind
+      // and must not move the frontier back: X re-fetches page 1 on its
+      // own (a return from the viewer, a refresh), and a frontier reset
+      // to page 1's cursor went into the stash with the grid, so the
+      // revisit bought every page it already held back one request at a
+      // time before it reached a new photo.
+      if (page.next !== null && (visit.payloadCursor === null
         || (reqCursor !== null && reqCursor === visit.payloadCursor))) {
         visit.payloadCursor = page.next;
       }
@@ -2393,11 +2457,15 @@ function applyPayload(url: string, body: string, srcHandle: string): void {
   }
 }
 
-function handleMediaPayload(url: string, body: string): void {
-  // The profile the payload arrived UNDER, recorded now; by drain time
-  // the reader may be on a different profile, and the non-advancing-cursor
-  // end signal must never cross that line.
-  const srcHandle = (location.pathname.split("/")[1] ?? "").toLowerCase();
+function handleMediaPayload(url: string, body: string, path: string): void {
+  // The profile the page was REQUESTED under: the interceptor records
+  // location.pathname as the request leaves. Read at arrival instead, a
+  // page-1 answer landing after a fast hop to the next profile carried
+  // that profile's handle, and its empty-terminated shape ended the new
+  // feed before its own page 1 arrived. By drain time the reader may be
+  // elsewhere again, so the handle is fixed here and travels with the
+  // buffered entry; the non-advancing-cursor end signal never crosses it.
+  const srcHandle = (path.split("/")[1] ?? "").toLowerCase();
   // The soft-throttle signature, read on BOTH paths (an inactive grid
   // buffers payloads unparsed, and the native view is exactly where
   // the soft note lives): a photos page carrying no media at all, for
@@ -2571,11 +2639,9 @@ function ownedByGrid(href: string): boolean {
 // scanApiPayload walks the response in document order, so `found` is already
 // in feed order; one run, merged as it stands.
 function mintApiTiles(found: ApiMedia[]): number {
-  return mergeRun(found
-    // The owner filter also quietly discards a stale template's media
-    // if the resource entry belonged to a previously-viewed profile.
-    .filter((m) => ownedByGrid(m.href) && isMediaHost(m.src))
-    .map((m) => ({ href: m.href, src: m.src, video: m.video, ratio: m.ratio })));
+  // The owner filter also quietly discards a stale template's media
+  // if the resource entry belonged to a previously-viewed profile.
+  return mergeRun(found.filter((m) => ownedByGrid(m.href) && isMediaHost(m.src)));
 }
 
 // The replay carries the reader's SESSION: cookies (credentials: include),
@@ -2592,12 +2658,12 @@ function mintApiTiles(found: ApiMedia[]): number {
 // Without this check a forged template would deliver the reader's ct0 to an
 // attacker's host as a request header (a permissive CORS preflight is
 // enough; the response never has to be readable). Anything that is not
-// x.com's own GraphQL API is refused outright.
-const API_HOSTS = new Set(["x.com", "twitter.com", "api.x.com", "api.twitter.com"]);
-
+// this page's own origin and its GraphQL path is refused outright: X's app
+// calls /i/api/graphql on x.com itself, and every template is a request
+// the page made, so no other host is ever a legitimate target.
 function assertOwnApi(template: string): URL {
   const url = new URL(template, location.origin);
-  if (url.protocol !== "https:" || !API_HOSTS.has(url.hostname.toLowerCase())
+  if (url.origin !== location.origin
     || !url.pathname.startsWith("/i/api/graphql/")) {
     throw new Error(`refusing to replay a non-X template: ${url.origin}`);
   }
@@ -2621,6 +2687,12 @@ async function fetchMediaPage(
   else delete vars["cursor"];
   vars["count"] = PAGE_COUNT;
   url.searchParams.set("variables", JSON.stringify(vars));
+  // The visit that asks pays for the page and learns from it; nothing
+  // below an await may reach a visit that replaced it meanwhile (the
+  // cursor, the end, the counters all belong to the asker). The rate
+  // picture is the one exception: it describes the reader's window,
+  // whatever visit asked.
+  const asked = visit;
   const resp = await fetch(url.toString(), {
     credentials: "include",
     headers: {
@@ -2629,14 +2701,17 @@ async function fetchMediaPage(
       "x-twitter-active-user": "yes",
       "x-twitter-auth-type": "OAuth2Session",
     },
+    signal: AbortSignal.timeout(REPLAY_TIMEOUT_MS),
   });
-  visit.ownPages++;
+  asked.ownPages++;
   noteRateHeaders(resp.headers.get("x-rate-limit-remaining"),
     resp.headers.get("x-rate-limit-reset"),
     resp.headers.get("x-rate-limit-limit"));
   if (resp.status === 429) noteRate429();
+  if (visit !== asked) throw new StaleVisit();
   if (!resp.ok) throw new Error(`UserMedia answered ${resp.status}`);
   const body: unknown = await resp.json();
+  if (visit !== asked) throw new StaleVisit();
   const media: ApiMedia[] = [];
   const cursors: string[] = [];
   const flags = { terminated: false, terminatedAny: false };
@@ -2674,7 +2749,7 @@ async function fetchMediaPage(
 }
 
 async function apiPrefill(): Promise<void> {
-  const startedFor = visit.gridHandle;
+  const startedVisit = visit;
   // Only a request from THIS visit may be the template: on an SPA hop from
   // another profile's media tab the old UserMedia entries are still in the
   // buffer (the owner filter in mintApiTiles is the belt behind this).
@@ -2684,10 +2759,10 @@ async function apiPrefill(): Promise<void> {
     // page as it lands; most activations need no request of ours at all.
     await pollFor(
       () => (visit.tiles.size >= PREFILL_MIN_TILES || visit.feedEnded || !active
-        || visit.gridHandle !== startedFor
+        || visit !== startedVisit
         ? true : null),
       6000);
-    if (!active || visit.gridHandle !== startedFor) return;
+    if (!active || visit !== startedVisit) return;
     // A feed that already ENDED needs no replay whatever the tile count:
     // a profile with 3 photos is full at 3.
     if (visit.feedEnded || visit.tiles.size >= PREFILL_MIN_TILES) {
@@ -2710,27 +2785,27 @@ async function apiPrefill(): Promise<void> {
     }
     // The driver's cursor extension is already buying pages; a second
     // ask here would be for the same cursor.
-    if (replayInFlight) return;
+    if (replayInFlight !== null) return;
     // At most ONE active page of CONTENT; replays share the page's own
     // rate-limit bucket, and a multi-page prefill can empty it (429s
     // that take X's own feeds down with it). A stalled ask buys
     // nothing, and this is the only asker on an undocked tiny profile:
     // if it treats one echo as final, nothing else ever settles that
     // grid (the stall settle is dock-only).
-    replayInFlight = true;
+    replayInFlight = startedVisit;
     let page: Awaited<ReturnType<typeof fetchMediaPage>>;
     try {
       page = await fetchMediaPage(template, visit.payloadCursor);
       while (page.echoed && !visit.feedEnded
         && !noteCursorEcho(visit.payloadCursor ?? "", "prefill replay")) {
         await new Promise((r) => setTimeout(r, ECHO_RETRY_MS));
-        if (!active || visit.gridHandle !== startedFor) return;
+        if (!active || visit !== startedVisit) return;
         page = await fetchMediaPage(template, visit.payloadCursor);
       }
     } finally {
-      replayInFlight = false;
+      if (replayInFlight === startedVisit) replayInFlight = null;
     }
-    if (!active || visit.gridHandle !== startedFor) return;
+    if (!active || visit !== startedVisit) return;
     // The page's own Bottom cursor is the frontier now. Dropped, the
     // next asker (the extension, or a drive making X re-fetch from the
     // top) buys this same page a second time. ONLY a page that minted
@@ -2745,6 +2820,7 @@ async function apiPrefill(): Promise<void> {
     console.info(`[xtag] mosaic prefill: +${page.added} photos via `
       + `${opNameOf(template)} replay`);
   } catch (error) {
+    if (error instanceof StaleVisit) return;
     if (String(error).includes("429")) {
       // noteRate429 (inside fetchMediaPage) already set the cooldown.
       console.warn("[xtag] mosaic prefill: rate limited (429); active replays "
@@ -2796,13 +2872,13 @@ async function userMediaQueryId(): Promise<string | null> {
 }
 
 async function tryGifFallback(): Promise<void> {
-  if (visit.gifFallbackTried || replayInFlight) return;
+  if (visit.gifFallbackTried || replayInFlight !== null) return;
   if (visit.tiles.size > 0 || !visit.fallbackSourceUrl) return;
   visit.gifFallbackTried = true;
-  const startedFor = visit.gridHandle;
+  const startedVisit = visit;
   try {
     const qid = await userMediaQueryId();
-    if (!qid || !active || visit.gridHandle !== startedFor) return;
+    if (!qid || !active || visit !== startedVisit) return;
     // The source URL is a photos-timeline request for THIS profile
     // (handle-gated at arrival), so it carries the right userId and
     // features; only the op segment changes. assertOwnApi still rules
@@ -2810,14 +2886,14 @@ async function tryGifFallback(): Promise<void> {
     const src = new URL(visit.fallbackSourceUrl);
     src.pathname = src.pathname.replace(/\/[^/]+\/[^/]+$/, `/${qid}/UserMedia`);
     const template = src.toString();
-    replayInFlight = true;
+    replayInFlight = startedVisit;
     let page: Awaited<ReturnType<typeof fetchMediaPage>>;
     try {
       page = await fetchMediaPage(template, null);
     } finally {
-      replayInFlight = false;
+      if (replayInFlight === startedVisit) replayInFlight = null;
     }
-    if (!active || visit.gridHandle !== startedFor) return;
+    if (!active || visit !== startedVisit) return;
     if (page.added === 0) {
       console.info("[xtag] mosaic: UserMedia fallback found nothing either");
       return;
@@ -2844,6 +2920,7 @@ async function tryGifFallback(): Promise<void> {
     console.info("[xtag] mosaic: photos feed empty; UserMedia fallback carried "
       + `+${page.added} media (GIF-only profiles live there)`);
   } catch (error) {
+    if (error instanceof StaleVisit) return;
     console.warn("[xtag] mosaic: UserMedia fallback failed:", error);
   }
 }
@@ -2892,8 +2969,7 @@ function stashGrid(): void {
 function restoreGrid(): void {
   const cached = gridCache.get(visit.gridHandle);
   if (!cached || Date.now() - cached.at > GRID_CACHE_TTL_MS) return;
-  const added = mergeRun(cached.entries.map(
-    (e) => ({ href: e.href, src: e.src, video: e.video, ratio: e.ratio })));
+  const added = mergeRun(cached.entries);
   visit.payloadTemplate = cached.template;
   visit.payloadCursor = cached.cursor;
   visit.cursorOurs = Boolean(cached.template && cached.cursor);
@@ -2904,6 +2980,21 @@ function restoreGrid(): void {
   }
   if (visit.tiles.size) setStatus(statusLine());
   console.info(`[xtag] mosaic: ${added} tiles restored from cache`);
+}
+
+// Which extension failures end the cursor path for the visit at once: a
+// refusal from X (any 4xx but the 429 the pause branch owns: the
+// template's query id rotated on a deploy, or its request shape went
+// stale) or a template this module will not send at all. Everything else
+// (a 5xx, a dropped or timed-out connection, an unparsable body) is a
+// blip until it repeats (see Visit.extendFailures); breaking on the first
+// one sent a whole visit to the window-borrowing drive, which the reader
+// sees as the page jumping on every step.
+function extensionFailureIsFinal(error: unknown): boolean {
+  const text = String(error);
+  return /answered 4\d\d/.test(text)
+    || text.includes("refusing to replay")
+    || text.includes("no variables param");
 }
 
 // --- the loading driver ----------------------------------------------------
@@ -2952,16 +3043,19 @@ async function driveLoop(): Promise<void> {
         setStatus(settleStatus());
       }
     }
-    // X's own ceiling: media_count from UserByScreenName counts photos
-    // AND videos, so the photos feed can never yield more; tiles
-    // reaching it means complete, whatever happened to the timeline
-    // payloads. This is the one end signal that works UNDOCKED with no
-    // payload at all (client-cache revisits); 0 >= 0 also settles a truly
-    // media-less profile to "No photos here.".
+    // X's own ceiling: media_count from UserByScreenName counts media
+    // POSTS, photos and videos alike, so the photos feed can never span
+    // more posts than that; the tiles' posts reaching it means complete,
+    // whatever happened to the timeline payloads. POSTS, not tiles: a
+    // profile of 4-photo posts reaches its media_count in tiles a quarter
+    // of the way in, and that false end went into the cache. This is the
+    // one end signal that works UNDOCKED with no payload at all
+    // (client-cache revisits); 0 >= 0 also settles a truly media-less
+    // profile to "No photos here.".
     if (!visit.feedEnded) {
       const stated = profileMediaCounts.get(visit.gridHandle);
-      if (stated !== undefined && visit.tiles.size >= stated) {
-        endFeed(`media_count ceiling (${visit.tiles.size} tiles >= ${stated} stated)`);
+      if (stated !== undefined && visit.posts.size >= stated) {
+        endFeed(`media_count ceiling (${visit.posts.size} posts >= ${stated} stated)`);
       }
     }
     // The one stall-settle rule, shared by the at-bottom wait and the
@@ -3064,7 +3158,7 @@ async function driveLoop(): Promise<void> {
     // quiet: stalled, backed off, ended, or serving nothing new past a
     // cached frontier (a revisit's passive pages mint nothing, so the
     // gate never holds there).
-    if (willExtend && (replayInFlight
+    if (willExtend && (replayInFlight !== null
       || Date.now() - visit.lastPassiveProgressAt < PASSIVE_QUIET_MS)) {
       setStatus(statusLine());
       await sleep(POLL_MS);
@@ -3113,9 +3207,13 @@ async function driveLoop(): Promise<void> {
     // back to the drive when the template goes stale (X rotates query
     // ids on deploys; the replay then 404s).
     if (willExtend && visit.payloadTemplate && visit.payloadCursor) {
-      replayInFlight = true;
+      const asking = visit;
+      replayInFlight = asking;
       try {
+        // Still this visit past the await, by construction: fetchMediaPage
+        // throws StaleVisit for any other outcome.
         const page = await fetchMediaPage(visit.payloadTemplate, visit.payloadCursor);
+        visit.extendFailures = 0;
         if (page.echoed) {
           // The ambiguous shape: end or stall (see noteCursorEcho). Keep
           // the cursor, wait a widening beat, ask again; only a cursor
@@ -3148,15 +3246,22 @@ async function driveLoop(): Promise<void> {
           }
         }
       } catch (error) {
+        // The visit that asked is over; nothing here belongs to the one
+        // that replaced it, and the loop head is about to exit anyway.
+        if (error instanceof StaleVisit) break;
         if (!String(error).includes("429")) {
-          console.warn("[xtag] mosaic: cursor extension failed; driving instead:", error);
-          visit.extendBroken = true;
-          visit.cursorOurs = false;
+          if (extensionFailureIsFinal(error) || ++visit.extendFailures >= 2) {
+            console.warn("[xtag] mosaic: cursor extension failed; driving instead:", error);
+            visit.extendBroken = true;
+            visit.cursorOurs = false;
+          } else {
+            console.warn("[xtag] mosaic: cursor extension failed once; asking again:", error);
+          }
         }
         // A 429 keeps the cursor: the pause branch owns the wait, and
         // extension resumes from the same spot after the reset.
       } finally {
-        replayInFlight = false;
+        if (replayInFlight === asking) replayInFlight = null;
       }
       lastStepAt = Date.now();
       await sleep(drivePaceMs());
@@ -3179,7 +3284,7 @@ async function driveLoop(): Promise<void> {
     // reader saw flicker and skeletons that never settled. Any later
     // tile clears the soft end as always.
     if (!progressed && settled && stallSettles()) continue;
-    borrowWindow();
+    const epoch = borrowWindow();
     try {
       const realDoc = document.documentElement.scrollHeight;
       if (visit.payloadSeen) {
@@ -3197,7 +3302,7 @@ async function driveLoop(): Promise<void> {
       // window back before the answer lands would ask it for nothing.
       await sleep(DRIVE_STEP_MS);
     } finally {
-      returnWindow();
+      returnWindow(epoch);
     }
     lastStepAt = Date.now();
     // The same low-budget pacing the extension path gets (drivePaceMs):
@@ -3283,6 +3388,7 @@ function deactivate(): void {
   spacerHeight = 0;
   lastMaxInner = -1;
   borrowed = 0;
+  borrowEpoch++;
   document.documentElement.classList.remove("xtag-grid-borrowing");
   overlay?.remove();
   overlay = gridEl = statusEl = firstSkel = null;
@@ -3349,9 +3455,8 @@ function realMenuItems(menu: HTMLElement): HTMLElement[] {
 
 function isMediaMenu(menu: HTMLElement): boolean {
   if (!MEDIA_PATH_RE.test(location.pathname)) return false;
-  const tab = selectedMediaTab();
-  if (!tab) return false;
-  const tabText = tabOriginalLabel(tab);
+  const tabText = currentTabLabel();
+  if (!tabText) return false;
   const items = realMenuItems(menu);
   return items.length === 2
     && items.some((item) => (item.textContent ?? "").trim() === tabText);
@@ -3375,8 +3480,7 @@ function setItemText(item: HTMLElement, text: string): void {
 function injectGridItem(menu: HTMLElement): void {
   if (menu.querySelector(`[${GRID_ITEM_ATTR}]`)) return;
   if (!isMediaMenu(menu)) return;
-  const tab = selectedMediaTab();
-  const tabText = tab ? tabOriginalLabel(tab) : "";
+  const tabText = currentTabLabel();
   const items = realMenuItems(menu);
   // Clone the item WITH the checkmark when one is on screen: the copy
   // then carries X's own ✓ (the blue svg, at X's size and place), and
@@ -3415,11 +3519,17 @@ function assertMenuChecks(): void {
   // this very function had hidden.
   const check = clone.querySelector("svg");
   if (check) {
-    // X's own glyph, shown while the grid is up; write-on-change,
-    // re-asserted per mutation batch (a hover re-render mutates, and
-    // observer callbacks run before that frame paints).
-    const want = active ? "visible" : "hidden";
-    if (check.style.visibility !== want) check.style.visibility = want;
+    // X's own glyph, shown while the grid is up. By a CLASS the stylesheet
+    // reads (content.css), never by the svg's own inline style: measured
+    // live, an inline visibility written here ended up hidden after
+    // React's rewrap of the freshly opened menu (the batch that re-glues
+    // the clone), so the row opened with no check at all until some later
+    // re-render ran this again. A rule in this extension's sheet outranks
+    // whatever the inline value ends up as. Write-on-change: a class
+    // toggle is an attribute mutation, re-asserted per batch.
+    if (clone.classList.contains(GRID_ITEM_CHECKED) !== active) {
+      clone.classList.toggle(GRID_ITEM_CHECKED, active);
+    }
     setItemText(clone, GRID_TAB_LABEL);
   } else {
     // No ✓ was on screen to clone from; the text glyph is the fallback.
@@ -3444,8 +3554,7 @@ function assertMenuChecks(): void {
     lastReal.insertAdjacentElement("afterend", clone);
   }
   if (!active) return;
-  const tab = selectedMediaTab();
-  const tabText = tab ? tabOriginalLabel(tab) : "";
+  const tabText = currentTabLabel();
   for (const item of realMenuItems(menu)) {
     if ((item.textContent ?? "").trim() !== tabText) continue;
     item.querySelectorAll("svg").forEach((svg) => {
@@ -3517,8 +3626,7 @@ function onMenuClick(event: MouseEvent): void {
     } else {
       // On the videos view: ride X's own Photos item (the one not naming
       // the current tab); the arrival watcher builds the grid on landing.
-      const tab = selectedMediaTab();
-      const tabText = tab ? tabOriginalLabel(tab) : "";
+      const tabText = currentTabLabel();
       const photos = realMenuItems(menu)
         .find((other) => (other.textContent ?? "").trim() !== tabText);
       selfClicking = true;
@@ -3536,8 +3644,7 @@ function onMenuClick(event: MouseEvent): void {
   // read structurally, never by word (the labels follow the UI
   // language): the item wearing the tab's own label IS the current view,
   // and the other item is the other one.
-  const tab = selectedMediaTab();
-  const tabText = tab ? tabOriginalLabel(tab) : "";
+  const tabText = currentTabLabel();
   override = "feed";
   // No tab to compare against means no idea which item this was; stand
   // down without rewriting the stored default on a guess.
@@ -3566,7 +3673,7 @@ export function initMosaic(): void {
     if (typeof detail !== "string") return;
     try {
       const parsed = JSON.parse(detail) as {
-        url?: unknown; body?: unknown; status?: unknown;
+        url?: unknown; body?: unknown; status?: unknown; path?: unknown;
         remaining?: unknown; reset?: unknown; limit?: unknown; kind?: unknown;
       };
       // A profile payload only carries the media_count ceiling; it spends
@@ -3594,7 +3701,10 @@ export function initMosaic(): void {
       if (typeof parsed.url === "string" && typeof parsed.body === "string"
         && parsed.body) {
         visit.passivePages++;
-        handleMediaPayload(parsed.url, parsed.body);
+        // The request-time route (interceptor __xtagV 8); an older tap
+        // carries none, and the arrival route is the next best guess.
+        const path = typeof parsed.path === "string" ? parsed.path : location.pathname;
+        handleMediaPayload(parsed.url, parsed.body, path);
       }
     } catch { /* not a payload of ours */ }
   });
@@ -3626,7 +3736,8 @@ export function initMosaic(): void {
     if (!(target instanceof Element)) return;
     if (overlay && overlay.contains(target)) return;
     if (!target.closest('a[href^="/"], [data-testid="app-bar-back"]')) return;
-    window.scrollTo(0, dockScrollY());
+    const dock = dockScrollY();
+    if (dock !== null) window.scrollTo(0, dock);
   }, true);
   window.addEventListener("resize", placeOverlay);
   // The dock/undock flip rides the window scroll (the user's before the
@@ -3639,6 +3750,9 @@ export function initMosaic(): void {
   // viewer, which returns to the grid).
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape" || !active || !onPhotosFeed()) return;
+    // An open dropdown takes the key (X closes its menus on a real
+    // Escape); a reader closing a menu has not asked to leave the grid.
+    if (document.querySelector('[role="menu"]')) return;
     // A SYNTHETIC ESCAPE IS OURS, NEVER THE READER'S; the same rule
     // onMenuClick follows for synthetic clicks, and for the same reason.
     // closeMenu falls back to dispatching one, so without this the module

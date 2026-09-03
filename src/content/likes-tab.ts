@@ -126,9 +126,16 @@ function buildTab(strip: HTMLElement, handle: string, selected: boolean): HTMLAn
   return tab;
 }
 
+// Set once the initial storage read is in (see initLikesTab): a mutation
+// batch can land before it, and enabled() answers its default (on) until
+// then, which put the tab up for a reader who had turned it off and took
+// it down a beat later.
+let ready = false;
+
 // Idempotent; runs per mutation batch because X re-renders the strip on
 // every route change.
 function evaluate(): void {
+  if (!ready) return;
   const found = profileStrip();
   const existing = document.querySelector<HTMLAnchorElement>(`[${TAB_ATTR}]`);
   const own = ownHandle();
@@ -169,5 +176,8 @@ export function initLikesTab(): void {
   // Not before the storage read: enabled() answers its default (on)
   // until then, and a boot-time evaluate could inject the tab for a
   // reader who turned it off (settings.ts's own init-time rule).
-  void settingsReady().then(evaluate);
+  void settingsReady().then(() => {
+    ready = true;
+    evaluate();
+  });
 }

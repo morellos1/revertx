@@ -15,26 +15,23 @@ export interface NativeReport {
 const SWITCH_KEYS = ["mediagrid", "likestab", "postgrid", "mediaview", "mediaphotos"];
 
 // Keep the switches in localStorage, which the page world can read
-// synchronously at document_start.
+// synchronously at document_start. The Media half is derived from the
+// whole snapshot on every write (readMediaGrid reads every generation of
+// the key), so nothing is ever migrated into storage.
 export function mirrorSwitches(): void {
-  const write = (s: Record<string, unknown>, persist: boolean): void => {
-    const mediagrid = readMediaGrid(s);
-    // First run after the 1.x update: store the migrated value once.
-    if (persist && typeof s["mediagrid"] !== "boolean") {
-      void chrome.storage.local.set({ mediagrid });
-    }
+  const write = (s: Record<string, unknown>): void => {
     try {
       localStorage.setItem(MIRROR_KEY, JSON.stringify({
-        mediagrid,
+        mediagrid: readMediaGrid(s),
         likestab: s["likestab"] !== false,
         postgrid: s["postgrid"] === true,
       }));
     } catch { /* the interceptor falls back to defaults */ }
   };
-  void chrome.storage.local.get(SWITCH_KEYS).then((s) => write(s, true));
+  void chrome.storage.local.get(SWITCH_KEYS).then(write);
   chrome.storage.onChanged.addListener((changes) => {
     if (!SWITCH_KEYS.some((k) => changes[k])) return;
-    void chrome.storage.local.get(SWITCH_KEYS).then((s) => write(s, false));
+    void chrome.storage.local.get(SWITCH_KEYS).then(write);
   });
 }
 
@@ -59,7 +56,13 @@ export function reportNative(): void {
       likes: s["likestab"] !== false && report.flags.history,
       postgrid: s["postgrid"] === true && report.flags.carousel,
     };
-    if (want.likes === report.likes && want.postgrid === report.postgrid) return;
+    if (want.likes === report.likes && want.postgrid === report.postgrid) {
+      // A boot that matches storage re-arms the guard: the note is only
+      // meant to stop a loop, and one left from an earlier mismatch of
+      // the same shape would veto a reload this tab does need.
+      try { sessionStorage.removeItem(RELOAD_NOTE); } catch { /* fine */ }
+      return;
+    }
     const asked = JSON.stringify(want);
     try {
       if (sessionStorage.getItem(RELOAD_NOTE) === asked) return;

@@ -180,8 +180,7 @@
   };
 
   try {
-    if (readSwitches().mediagrid && mediaPath(location.href)
-      && !location.search) {
+    if (readSwitches().mediagrid && mediaPath(location.href)) {
       history.replaceState(history.state, "", location.pathname + PHOTO_QUERY);
     }
   } catch { /* leave the URL alone */ }
@@ -297,10 +296,14 @@
     document.dispatchEvent(new CustomEvent("xtag:media-payload", { detail }));
   };
 
+  // `path` is location.pathname as the REQUEST left, not as the answer
+  // landed: a response can arrive after the reader hops to the next
+  // profile, and the content script keys every end signal and cursor on
+  // the profile the page was asked for, never the one it arrived under.
   const emit = (url: string, body: string, status: number,
     remaining: string | null, reset: string | null,
-    limit: string | null = null, kind = "media"): void => {
-    const detail = JSON.stringify({ url, body, status, remaining, reset, limit, kind });
+    limit: string | null, kind: string, path: string): void => {
+    const detail = JSON.stringify({ url, body, status, remaining, reset, limit, kind, path });
     if (listenerReady) {
       dispatchPayload(detail);
       return;
@@ -316,6 +319,7 @@
 
   const origFetch = window.fetch;
   window.fetch = async function (...args: Parameters<typeof fetch>) {
+    const path = location.pathname;
     const resp = await origFetch.apply(this, args);
     try {
       const first = args[0];
@@ -328,16 +332,16 @@
         const limit = resp.headers.get("x-rate-limit-limit");
         if (resp.ok) {
           resp.clone().text()
-            .then((body) => emit(url, body, resp.status, remaining, reset, limit))
+            .then((body) => emit(url, body, resp.status, remaining, reset, limit, "media", path))
             .catch(() => { /* stream gone */ });
         } else {
           // A failed page still teaches: a 429 (or any refusal) carries
           // the budget headers the driver paces itself by.
-          emit(url, "", resp.status, remaining, reset, limit);
+          emit(url, "", resp.status, remaining, reset, limit, "media", path);
         }
       } else if (PROFILE_RE.test(url) && resp.ok) {
         resp.clone().text()
-          .then((body) => emit(url, body, resp.status, null, null, null, "profile"))
+          .then((body) => emit(url, body, resp.status, null, null, null, "profile", path))
           .catch(() => { /* stream gone */ });
       }
     } catch { /* never break the page's own fetch */ }
@@ -348,13 +352,13 @@
   // only the wrapper body, which barely changes between builds). Bump
   // when the tap's behavior changes.
   try {
-    (window.fetch as typeof window.fetch & { __xtagV?: number }).__xtagV = 7;
+    (window.fetch as typeof window.fetch & { __xtagV?: number }).__xtagV = 8;
   } catch { /* marker only */ }
 
   // X's app is fetch-based; the XHR wrap is the belt.
   const origOpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function (
-    this: XMLHttpRequest & { __xtagUrl?: string; __xtagHooked?: boolean },
+    this: XMLHttpRequest & { __xtagUrl?: string; __xtagPath?: string; __xtagHooked?: boolean },
     method: string,
     url: string | URL,
     isAsync?: boolean,
@@ -362,6 +366,7 @@
     password?: string | null,
   ) {
     this.__xtagUrl = String(url);
+    this.__xtagPath = location.pathname;
     // One listener per XHR instance: open() may legally be called again on
     // the same object, and stacking a listener per call double-emitted the
     // payload (harmless, tiles dedupe, but wasted parse work).
@@ -369,9 +374,12 @@
       return origOpen.call(this, method, url, isAsync ?? true, username, password);
     }
     this.__xtagHooked = true;
-    this.addEventListener("load", function (this: XMLHttpRequest & { __xtagUrl?: string }) {
+    this.addEventListener("load", function (
+      this: XMLHttpRequest & { __xtagUrl?: string; __xtagPath?: string },
+    ) {
       try {
         if (!this.__xtagUrl) return;
+        const path = this.__xtagPath ?? location.pathname;
         // The responseText GETTER throws for a non-text responseType
         // ("json", "arraybuffer", "blob"); typeof does not guard the
         // access, and the throw used to abort this whole handler, body
@@ -385,12 +393,14 @@
           const reset = this.getResponseHeader("x-rate-limit-reset");
           const limit = this.getResponseHeader("x-rate-limit-limit");
           if (ok && textual) {
-            emit(this.__xtagUrl, this.responseText, this.status, remaining, reset, limit);
+            emit(this.__xtagUrl, this.responseText, this.status, remaining, reset, limit,
+              "media", path);
           } else if (this.status !== 0) {
-            emit(this.__xtagUrl, "", this.status, remaining, reset, limit);
+            emit(this.__xtagUrl, "", this.status, remaining, reset, limit, "media", path);
           }
         } else if (PROFILE_RE.test(this.__xtagUrl) && ok && textual) {
-          emit(this.__xtagUrl, this.responseText, this.status, null, null, null, "profile");
+          emit(this.__xtagUrl, this.responseText, this.status, null, null, null,
+            "profile", path);
         }
       } catch { /* never break the page's own XHR */ }
     });

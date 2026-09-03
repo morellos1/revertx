@@ -69,7 +69,7 @@ function fixture(variant, url, router) {
   return `<!DOCTYPE html><html dir="ltr" lang="en"><head><meta charset="utf-8"><title>X</title>
 <script type="text/javascript">${assign}</script></head>
 <body>
-<header><nav><a data-testid="AppTabBar_Profile_Link" href="/${OWN}">Profile</a><a data-testid="SideNav_NewTweet_Button" style="background-color: rgb(29, 155, 240)">Post</a></nav></header>
+<header><nav><a data-testid="AppTabBar_Profile_Link" href="/${OWN}">Profile</a></nav></header>
 <main><h2 style="color: rgb(231, 233, 234)">${handle}</h2><div data-testid="UserDescription">bio <a href="/someone" style="color: rgb(255, 122, 0)">@someone</a></div>
 <div role="tablist">
   <div><a role="tab" href="/${handle}" aria-selected="true"><div><span style="font-weight:700">Posts</span><svg class="chevron"></svg></div><div class="underline"></div></a></div>
@@ -175,7 +175,7 @@ try {
   r = await readPage(page);
   check("A mirror written by content script", r.mirror === JSON.stringify({ mediagrid: true, likestab: true, postgrid: false }), r.mirror);
   let st = await storage(["mediagrid", "native"]);
-  check("A mediagrid persisted once, report stored for the popup", st.mediagrid === true && st.native && st.native.likes === true && st.native.flags.carousel === true, st);
+  check("A nothing written back into storage, report stored for the popup", st.mediagrid === undefined && st.native && st.native.likes === true && st.native.flags.carousel === true, st);
   check("A no Likes tab on someone else's profile", r.likesTab === null, r.likesTab);
 
   // B: the Media tab, direct arrival
@@ -282,13 +282,17 @@ try {
   r = await readPage(page);
   check("E next boot: postgrid flipped, history not", r.attr && r.attr.likes === false && r.attr.postgrid === true && r.probe.carousel === false && r.probe.history === true && eq(r.probe.overrides, { [CAROUSEL]: false }), { attr: r.attr, probe: r.probe });
 
-  // F: migration from 1.x, 2.0 and unreleased-build media choices
-  // ("masonry" maps to the surviving mosaic view)
-  for (const [stored, want] of [[{ mediaview: "videos" }, false], [{ mediaphotos: false }, false], [{ mediaview: "grid" }, true], [{ mediaview: "masonry" }, true], [{}, true]]) {
+  // F: migration from the 1.x and 2.0 media choices, read into the mirror
+  // on every boot (nothing is written back into storage; a stray word
+  // falls to the default)
+  for (const [stored, want] of [[{ mediaview: "videos" }, false], [{ mediaphotos: false }, false], [{ mediaview: "grid" }, true], [{ mediagrid: false }, false], [{ mediaview: "masonry" }, true], [{}, true]]) {
     await clearStorage(); await setStorage(stored); await resetMirror();
     await page.reload(); await settle(page);
+    const mirror = JSON.stringify({ mediagrid: want, likestab: true, postgrid: false });
+    await waitMirror(page, mirror);
+    r = await readPage(page);
     st = await storage(["mediagrid"]);
-    check(`F migrate ${JSON.stringify(stored)} -> mediagrid=${want}`, st.mediagrid === want, st);
+    check(`F migrate ${JSON.stringify(stored)} -> mirror mediagrid=${want}, storage untouched`, r.mirror === mirror && st.mediagrid === stored.mediagrid, { mirror: r.mirror, st });
   }
   await clearStorage(); await resetMirror();
 

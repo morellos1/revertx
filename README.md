@@ -109,7 +109,8 @@ Each feature uses a different trick. None of them rewrites X's code.
   justified rows with no gaps, and a photo wider than 4:3 usually takes
   the full row. The images are X's thumbnails and every tile opens X's
   own viewer. A GIF-only profile is served from X's combined media
-  timeline, the one place X still lists GIFs.
+  timeline, the one place X still lists GIFs; that request's query id
+  is read from X's own script bundle, which the browser already holds.
 
 The flags are patched through an accessor on `window.__INITIAL_STATE__`.
 The popup warns when X no longer ships a flag, and the switch does nothing.
@@ -121,7 +122,7 @@ The popup warns when X no longer ships a flag, and the switch does nothing.
 | `npm run watch` | Rebuild on save |
 | `npm run typecheck` | Type check |
 | `npm run zip` | Build the store packages |
-| `node test/native-boot.mjs` | Boot test in Chromium |
+| `node test/native-boot.mjs` | Boot test in Chromium (needs `npm i --no-save playwright-core` once) |
 
 Source is TypeScript in `src/`, bundled by esbuild into `extension/dist/`.
 

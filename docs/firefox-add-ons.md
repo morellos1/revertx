@@ -48,6 +48,8 @@ and returns the `.xpi`.
 | 2.2.0 | Quota fixes, the count-free "image quota" pill, and the `UserMedia` fallback for GIF-only profiles. |
 | 2.2.1 | The dropdown hairline (whole-pixel overlay placement) and the instant end-of-profile settle. |
 | 2.2.2 | The profile hover card shows over the Mosaic (the dropdowns' clip hole, extended to it), and the hole's close is a one-frame snap. |
+| 2.2.3 | Internal only: one judge for every timeline page and one object for the per-visit loader state. No change in behaviour. |
+| 2.2.4 | A review release: the end-of-profile count compares posts (what X's `media_count` counts), no cross-profile steering after a hop, a forward-only loader frontier, the Mosaic row's check survives the dropdown's re-render, and Escape with a dropdown open closes the dropdown only. |
 
 ## The Mosaic view (from 2.1.0)
 

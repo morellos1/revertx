@@ -97,21 +97,18 @@ section { padding: 10px 16px 14px; }
   cursor: pointer;
 }
 
-/* An informational line under a row, in the faint voice (the accent
-   .warn is for layouts X removed). */
-.hint {
-  color: var(--faint);
-  font-size: 11px;
-  line-height: 1.4;
-  margin: -2px 0 6px 8px;
-}
-
+/* Informational lines in the faint voice (the accent .warn is for layouts
+   X removed): .hint sits under its row, .note closes the section. */
+.hint,
 .note {
   color: var(--faint);
   font-size: 11px;
   line-height: 1.4;
-  margin: 12px 0 0;
 }
+
+.hint { margin: -2px 0 6px 8px; }
+
+.note { margin: 12px 0 0; }
 
 /* Indented under its row: 13px box + 9px gap. */
 .warn {

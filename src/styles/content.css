@@ -225,6 +225,17 @@ html.xtag-gridmode:not(.xtag-grid-borrowing)
   transition: width 300ms ease;
 }
 
+/* --- the injected dropdown item ------------------------------------------- */
+/* The Mosaic row in X's media dropdown is a clone of one of X's own items,
+   check svg included. Whether that check shows rides a CLASS
+   (assertMenuChecks), never the svg's inline style: measured live, an
+   inline value written per mutation batch ended up hidden after React's
+   rewrap of a freshly opened menu, and the row opened with no check at
+   all. A rule here outranks whatever the inline value ends up as. */
+[data-xtag-grid-item] svg { visibility: hidden !important; }
+
+[data-xtag-grid-item].xtag-item-checked svg { visibility: visible !important; }
+
 /* One line under the profile's tab strip while X's own photos view is
    rate-limited (see assertRateNotice). X's small grey reads on both
    themes. */
